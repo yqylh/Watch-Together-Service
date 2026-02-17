@@ -147,6 +147,8 @@ hr {
   display: grid;
   gap: 16px;
   grid-template-columns: 1fr;
+  --room-side-current: 360px;
+  --room-video-min-height: 380px;
 }
 
 .two-col {
@@ -163,7 +165,7 @@ hr {
   }
 
   .room-layout {
-    grid-template-columns: minmax(0, 1.45fr) minmax(340px, 0.95fr);
+    grid-template-columns: minmax(0, 1fr) minmax(300px, var(--room-side-current));
     align-items: start;
   }
 
@@ -543,8 +545,21 @@ button:disabled {
 
 .watch-video,
 .video-item video {
-  max-height: 360px;
   margin-bottom: 8px;
+}
+
+.watch-video {
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+}
+
+@media (min-width: 980px) {
+  .watch-video {
+    min-height: var(--room-video-min-height);
+    max-height: min(78vh, 860px);
+  }
 }
 
 .remote-grid {

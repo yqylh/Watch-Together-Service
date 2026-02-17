@@ -93,6 +93,7 @@ let localObjectHash = '';
 let lastDriftCorrectionAt = 0;
 let lastHeartbeatSentAt = 0;
 let lastUnmatchedFiles = [];
+let layoutFitRaf = 0;
 
 function getAuthToken() {
   return localStorage.getItem(AUTH_TOKEN_KEY) || '';
@@ -143,6 +144,50 @@ function setStatus(text) {
   watchStatusEl.textContent = text;
 }
 
+function applyAutoLayoutBalance() {
+  const viewportWidth = Number(window.innerWidth || 0);
+  if (viewportWidth < 980 || roomAppEl.classList.contains('side-collapsed')) {
+    roomAppEl.style.removeProperty('--room-side-current');
+    roomAppEl.style.removeProperty('--room-video-min-height');
+    return;
+  }
+
+  const containerWidth = Number(roomAppEl.clientWidth || viewportWidth);
+  const viewportHeight = Number(window.innerHeight || 0);
+  if (!containerWidth || !viewportHeight) {
+    return;
+  }
+
+  const gridGap = 16;
+  const minSideWidth = 300;
+  const maxSideWidth = Math.max(minSideWidth, Math.min(440, Math.round(containerWidth * 0.38)));
+  const targetVideoHeightByViewport = Math.max(340, Math.min(760, Math.round(viewportHeight * 0.56)));
+  const minMainWidthForTarget = Math.max(620, Math.round((targetVideoHeightByViewport * 16) / 9));
+
+  let sideWidth = containerWidth - minMainWidthForTarget - gridGap;
+  sideWidth = Math.max(minSideWidth, Math.min(sideWidth, maxSideWidth));
+
+  const mainWidth = Math.max(0, containerWidth - sideWidth - gridGap);
+  const targetVideoHeightByWidth = Math.round((mainWidth * 9) / 16);
+  const targetVideoMinHeight = Math.max(
+    320,
+    Math.min(760, targetVideoHeightByViewport, targetVideoHeightByWidth || targetVideoHeightByViewport),
+  );
+
+  roomAppEl.style.setProperty('--room-side-current', `${Math.round(sideWidth)}px`);
+  roomAppEl.style.setProperty('--room-video-min-height', `${Math.round(targetVideoMinHeight)}px`);
+}
+
+function scheduleAutoLayoutBalance() {
+  if (layoutFitRaf) {
+    cancelAnimationFrame(layoutFitRaf);
+  }
+  layoutFitRaf = requestAnimationFrame(() => {
+    layoutFitRaf = 0;
+    applyAutoLayoutBalance();
+  });
+}
+
 function setSidePanelCollapsed(collapsed) {
   roomAppEl.classList.toggle('side-collapsed', Boolean(collapsed));
   if (collapsed) {
@@ -150,6 +195,7 @@ function setSidePanelCollapsed(collapsed) {
   } else {
     expandSidePanelBtn.classList.add('hidden');
   }
+  scheduleAutoLayoutBalance();
 }
 
 function switchRoomTab(panelId) {
@@ -1552,6 +1598,10 @@ window.addEventListener('beforeunload', () => {
   clearLocalObjectUrl();
 });
 
+window.addEventListener('resize', () => {
+  scheduleAutoLayoutBalance();
+});
+
 setInterval(() => {
   if (!joined) {
     return;
@@ -1584,6 +1634,7 @@ async function checkAuth() {
     currentUserEl.textContent = `${currentUser.username} (${currentUser.role})`;
     localVideoLabelEl.textContent = `${currentUser.username} (你)`;
     roomAppEl.classList.remove('hidden');
+    scheduleAutoLayoutBalance();
     return true;
   } catch (_err) {
     currentUser = null;
@@ -1611,6 +1662,7 @@ async function checkAuth() {
   try {
     await initRoomInfo();
     connectSocket();
+    scheduleAutoLayoutBalance();
     setStatus('请点击“加入”进入放映室');
   } catch (err) {
     roomTitleEl.textContent = '放映室不存在或已删除';
