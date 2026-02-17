@@ -91,8 +91,9 @@ async function loadStorageInfo() {
   const pool = data.pool || {};
   const disk = data.disk || null;
   const lines = [];
-
-  lines.push(`播放池: 已用 ${formatBytes(pool.usageBytes)} / 上限 ${formatBytes(pool.maxBytes)} (可用 ${formatBytes(pool.availableBytes)})`);
+  const poolLimitLabel = pool.isUnlimited ? '无上限' : formatBytes(pool.maxBytes);
+  const poolAvailableLabel = pool.isUnlimited ? '不限制' : formatBytes(pool.availableBytes);
+  lines.push(`播放池: 已用 ${formatBytes(pool.usageBytes)} / 上限 ${poolLimitLabel} (可用 ${poolAvailableLabel})`);
   lines.push(`池中文件数: ${Number(pool.fileCount || 0)}`);
   if (disk) {
     lines.push(`所在磁盘: 剩余 ${formatBytes(disk.freeBytes)} / 总计 ${formatBytes(disk.totalBytes)}`);
@@ -122,8 +123,12 @@ uploadForm.addEventListener('submit', async (event) => {
     }
 
     if (uploadMode === 'local_file') {
-      uploadStatus.textContent = '本地模式：正在前端计算 SHA-256...';
-      const contentHash = normalizeHash(await computeFileSha256Hex(selectedFile));
+      const contentHash = normalizeHash(await computeFileSha256Hex(selectedFile, {
+        onProgress: (loaded, total) => {
+          const pct = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
+          uploadStatus.textContent = `本地模式：正在前端计算 SHA-256... ${pct}%`;
+        },
+      }));
       if (!/^[a-f0-9]{64}$/.test(contentHash)) {
         throw new Error('本地模式 hash 计算失败');
       }

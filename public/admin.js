@@ -160,7 +160,9 @@ async function loadStorage() {
   const disk = data.disk || null;
 
   const lines = [];
-  lines.push(`播放池: ${formatBytes(pool.usageBytes)} / ${formatBytes(pool.maxBytes)} (可用 ${formatBytes(pool.availableBytes)})`);
+  const poolLimitLabel = pool.isUnlimited ? '无上限' : formatBytes(pool.maxBytes);
+  const poolAvailableLabel = pool.isUnlimited ? '不限制' : formatBytes(pool.availableBytes);
+  lines.push(`播放池: ${formatBytes(pool.usageBytes)} / ${poolLimitLabel} (可用 ${poolAvailableLabel})`);
   lines.push(`文件数: ${Number(pool.fileCount || 0)}`);
   if (disk) {
     lines.push(`磁盘剩余: ${formatBytes(disk.freeBytes)} / ${formatBytes(disk.totalBytes)}`);

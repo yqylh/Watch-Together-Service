@@ -3,7 +3,7 @@
 可部署的多人一起看系统，支持：
 
 1. 视频上传支持两种模式：
-   - `cloud`：上传文件，异步处理（hash / 压缩 / 入池 / OSS）
+   - `cloud`：上传文件，异步处理（hash / 原样入池 / OSS）
    - `local_file`：前端基于所选文件计算 `contentHash`（SHA-256）后仅提交 hash，不上传源文件
 2. 双播放模式放映室：`cloud` 与 `local_file`
 3. 房间内同步播放（播放/暂停/进度/倍速/切集）
@@ -52,11 +52,11 @@ bash scripts/deploy.sh
 - 仅校验当前集；切集后需重新校验新当前集。
 - 未校验用户仍可聊天/语音，但播放操作会被拒绝。
 
-## 存储与转码
+## 存储与格式
 
 - 支持上传格式：`.mp4 .webm .ogg .ogv .m4v .mov .mkv .avi .ts`。
-- 默认统一压缩为 `MP4(H.264/AAC)`，支持硬编参数与 CPU 回退。
-- 本地播放池容量可配，满时按 LRU 淘汰（跳过正在播放/读取文件）。
+- 不做转码压缩，上传什么格式就按原样存储。
+- 本地播放池默认无容量上限（可通过 `PLAY_POOL_MAX_BYTES` 手动设置限制）；设置限制时才会按 LRU 淘汰（跳过正在播放/读取文件）。
 - 可配置阿里云 OSS：上传后后台入 OSS，本地缺文件时自动回源并 hash 校验。
 
 ## 主要环境变量
@@ -69,21 +69,8 @@ bash scripts/deploy.sh
 
 播放池：
 - `PLAY_POOL_DIR`
-- `PLAY_POOL_MAX_BYTES`
+- `PLAY_POOL_MAX_BYTES`（`0` 表示无上限）
 - `TEMP_UPLOAD_DIR`
-
-转码：
-- `ENABLE_TRANSCODE`
-- `FFMPEG_PATH`
-- `TRANSCODE_VIDEO_CODEC`
-- `TRANSCODE_AUDIO_CODEC`
-- `TRANSCODE_PRESET`
-- `TRANSCODE_VIDEO_BITRATE`
-- `TRANSCODE_AUDIO_BITRATE`
-- `TRANSCODE_CRF`
-- `TRANSCODE_MAX_WIDTH`
-- `TRANSCODE_HWACCEL`
-- `TRANSCODE_FALLBACK_CPU`
 
 同步体验：
 - `SYNC_DRIFT_SOFT_THRESHOLD_MS`
@@ -154,4 +141,4 @@ Root 管理：
 1. 优先使用 `bash scripts/deploy.sh`。
 2. 生产环境建议反向代理 + HTTPS（WebRTC 体验更稳定）。
 3. `data/`、`playback_pool/`、`uploads_tmp/` 目录放在持久化磁盘。
-4. 按并发与码率调整播放池容量与转码参数。
+4. 如需限制本地存储，可手动设置 `PLAY_POOL_MAX_BYTES`。

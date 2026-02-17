@@ -73,9 +73,9 @@ const authTokenCookieName = 'auth_token';
 
 const poolDir = path.join(__dirname, process.env.PLAY_POOL_DIR || 'playback_pool');
 const tempDir = path.join(__dirname, process.env.TEMP_UPLOAD_DIR || 'uploads_tmp');
-const playPoolMaxBytes = Number(process.env.PLAY_POOL_MAX_BYTES || 10 * 1024 * 1024 * 1024);
+const playPoolMaxBytes = Number(process.env.PLAY_POOL_MAX_BYTES || 0);
 
-const enableTranscode = isTruthy(process.env.ENABLE_TRANSCODE || 'true');
+const enableTranscode = false;
 const ffmpegPath = (process.env.FFMPEG_PATH || 'ffmpeg').trim();
 const transcodeVideoCodec = (process.env.TRANSCODE_VIDEO_CODEC || 'libx264').trim();
 const transcodeAudioCodec = (process.env.TRANSCODE_AUDIO_CODEC || 'aac').trim();
@@ -1009,6 +1009,9 @@ async function ensurePoolSpace(requiredBytes, protectedVideoIds) {
   if (!Number.isFinite(requiredBytes) || requiredBytes <= 0) {
     return;
   }
+  if (!Number.isFinite(playPoolMaxBytes) || playPoolMaxBytes <= 0) {
+    return;
+  }
 
   let usage = await getPoolUsageBytes();
   if (usage + requiredBytes <= playPoolMaxBytes) {
@@ -1239,14 +1242,16 @@ async function getStorageSnapshot() {
   const poolUsage = await getPoolUsageBytes();
   const poolFiles = listLocalPoolFiles();
   const disk = await readDiskStatsSnapshot();
+  const isUnlimited = !Number.isFinite(playPoolMaxBytes) || playPoolMaxBytes <= 0;
 
   return {
     pool: {
       dir: poolDir,
-      maxBytes: playPoolMaxBytes,
+      maxBytes: isUnlimited ? null : playPoolMaxBytes,
       usageBytes: poolUsage,
-      availableBytes: Math.max(0, playPoolMaxBytes - poolUsage),
+      availableBytes: isUnlimited ? null : Math.max(0, playPoolMaxBytes - poolUsage),
       fileCount: poolFiles.length,
+      isUnlimited,
     },
     disk,
     oss: {
@@ -1373,23 +1378,11 @@ async function processLocalUploadJob(jobId, payload) {
     const sourceHashResult = await hashFile(sourcePath);
 
     const existing = getVideoByHash(sourceHashResult.hash);
-    let preparedName = payload.file.filename;
-    let preparedOriginalName = payload.file.originalname;
-    let preparedMime = payload.file.mimetype || inferMimeFromExt(getExtension(payload.file.originalname)) || 'video/mp4';
+    const preparedName = payload.file.filename;
+    const preparedOriginalName = payload.file.originalname;
+    const preparedMime = payload.file.mimetype || inferMimeFromExt(getExtension(payload.file.originalname)) || 'video/mp4';
 
-    if (!existing && enableTranscode) {
-      updateVideoJobState(jobId, {
-        status: 'processing',
-        stage: 'compressing',
-        message: '压缩转码中（统一输出 MP4）',
-        progress: 0.55,
-      });
-      const transcoded = await maybeTranscodeVideo(sourcePath, payload.file.originalname);
-      workingPath = transcoded.path;
-      preparedName = transcoded.filename;
-      preparedOriginalName = transcoded.originalName;
-      preparedMime = transcoded.mimeType;
-    } else if (existing) {
+    if (existing) {
       updateVideoJobState(jobId, {
         status: 'processing',
         stage: 'deduplicating',
@@ -1616,6 +1609,7 @@ app.get('/api/auth/me', authRequired, (req, res) => {
 });
 
 app.get('/api/supported-formats', authRequired, (_req, res) => {
+  const isPoolUnlimited = !Number.isFinite(playPoolMaxBytes) || playPoolMaxBytes <= 0;
   res.json({
     uploadModes: [
       { value: 'cloud', label: '云端托管（上传文件）' },
@@ -1624,20 +1618,12 @@ app.get('/api/supported-formats', authRequired, (_req, res) => {
     formats: SUPPORTED_VIDEO_FORMATS,
     transcode: {
       enabled: enableTranscode,
-      unifiedOutput: 'mp4(h264/aac)',
-      ffmpegPath,
-      videoCodec: transcodeVideoCodec,
-      audioCodec: transcodeAudioCodec,
-      preset: transcodePreset,
-      maxWidth: transcodeMaxWidth,
-      videoBitrate: transcodeVideoBitrate || null,
-      crf: transcodeVideoBitrate ? null : transcodeCrf,
-      hwaccel: transcodeHwaccel || null,
-      fallbackCpu: transcodeFallbackCpu,
+      unifiedOutput: 'none (passthrough)',
     },
     storage: {
       poolDir,
-      poolMaxBytes: playPoolMaxBytes,
+      poolMaxBytes: isPoolUnlimited ? null : playPoolMaxBytes,
+      poolUnlimited: isPoolUnlimited,
       ossEnabled: Boolean(ossClient),
       ossBucket: ossBucket || null,
       ossRegion: ossRegion || null,

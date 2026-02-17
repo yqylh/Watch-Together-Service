@@ -918,11 +918,11 @@ function tryAutoVerifyCurrentRequirement() {
   }
 }
 
-async function computeFileSha256Hex(file) {
-  const buffer = await file.arrayBuffer();
-  const digest = await crypto.subtle.digest('SHA-256', buffer);
-  const bytes = new Uint8Array(digest);
-  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+async function computeFileSha256Hex(file, options = {}) {
+  if (window.WatchPartyCommon?.computeFileSha256Hex) {
+    return window.WatchPartyCommon.computeFileSha256Hex(file, options);
+  }
+  throw new Error('缺少哈希模块，请刷新页面后重试');
 }
 
 async function verifySelectedLocalFile() {
@@ -952,7 +952,12 @@ async function verifySelectedLocalFile() {
 
   let calculatedHash;
   try {
-    calculatedHash = normalizeHash(await computeFileSha256Hex(file));
+    calculatedHash = normalizeHash(await computeFileSha256Hex(file, {
+      onProgress: (loaded, total) => {
+        const pct = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
+        setLocalFileStatus(`计算 SHA-256 中... ${pct}%`);
+      },
+    }));
   } catch (err) {
     setLocalFileStatus(`计算 hash 失败: ${err.message}`);
     return;
