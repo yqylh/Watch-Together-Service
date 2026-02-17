@@ -37,6 +37,7 @@ const toggleCamBtn = document.getElementById('toggleCamBtn');
 const toggleMicBtn = document.getElementById('toggleMicBtn');
 const joinBtn = document.getElementById('joinBtn');
 const leaveBtn = document.getElementById('leaveBtn');
+const joinStateBadgeEl = document.getElementById('joinStateBadge');
 
 const localVideoEl = document.getElementById('localVideo');
 const localVideoLabelEl = document.getElementById('localVideoLabel');
@@ -62,6 +63,7 @@ const localFileMapByHash = new Map();
 const verifiedEpisodeHashes = new Map();
 
 let joined = false;
+let joiningRoom = false;
 let localStream = null;
 let playbackSuppressed = false;
 let seekDebounce = null;
@@ -291,6 +293,21 @@ function removeRemoteVideo(peerId) {
   if (box) {
     box.remove();
   }
+}
+
+function updateJoinStateUI() {
+  const joining = Boolean(joiningRoom);
+  const inRoom = Boolean(joined);
+
+  joinBtn.disabled = joining || inRoom;
+  leaveBtn.disabled = joining || !inRoom;
+
+  if (joining) {
+    joinStateBadgeEl.textContent = '加入中';
+    return;
+  }
+
+  joinStateBadgeEl.textContent = inRoom ? '已加入' : '未加入';
 }
 
 function updateMediaToggleButtons() {
@@ -1145,9 +1162,12 @@ async function verifySelectedLocalFile() {
 }
 
 async function joinRoom() {
-  if (joined || !socket) {
+  if (joined || joiningRoom || !socket) {
     return;
   }
+
+  joiningRoom = true;
+  updateJoinStateUI();
 
   try {
     await prepareLocalMedia();
@@ -1156,12 +1176,16 @@ async function joinRoom() {
   }
 
   socket.emit('join-room', { roomId }, (result) => {
+    joiningRoom = false;
+    updateJoinStateUI();
+
     if (!result?.ok) {
       setStatus(result?.error || '加入失败');
       return;
     }
 
     joined = true;
+    updateJoinStateUI();
     lastHeartbeatSentAt = 0;
     lastDriftCorrectionAt = 0;
     setStatus('已加入放映室');
@@ -1180,6 +1204,7 @@ function leaveRoom() {
   if (joined && socket) {
     socket.emit('leave-room');
   }
+  joiningRoom = false;
   joined = false;
   initialPlaybackAligned = false;
   lastHeartbeatSentAt = 0;
@@ -1203,6 +1228,7 @@ function leaveRoom() {
   clearLocalObjectUrl();
 
   setStatus('已离开放映室');
+  updateJoinStateUI();
 }
 
 function canDeleteRoom() {
@@ -1610,6 +1636,7 @@ async function checkAuth() {
   joinCamEl.checked = false;
   joinMicEl.checked = false;
   updateMediaToggleButtons();
+  updateJoinStateUI();
 
   const authed = await checkAuth();
   if (!authed) {

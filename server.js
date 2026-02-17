@@ -340,7 +340,7 @@ function serializeRoom(room) {
 }
 
 function serializeVideo(video) {
-  const rooms = listRoomsByVideo(video.id).map(serializeRoom);
+  const rooms = listRoomsLinkedToVideo(video.id).map(serializeRoom);
   return {
     id: video.id,
     title: video.title,
@@ -357,6 +357,28 @@ function serializeVideo(video) {
     coverUrl: video.cover_filename ? `/covers/${video.cover_filename}` : null,
     rooms,
   };
+}
+
+function listRoomsLinkedToVideo(videoId) {
+  const roomMap = new Map();
+
+  listRoomsByVideo(videoId).forEach((room) => {
+    roomMap.set(room.id, room);
+  });
+
+  const playlists = listPlaylists();
+  playlists.forEach((playlist) => {
+    const episodes = listPlaylistEpisodes(playlist.id);
+    const includesVideo = episodes.some((item) => String(item.video_id || '') === String(videoId || ''));
+    if (!includesVideo) {
+      return;
+    }
+    listRoomsByPlaylist(playlist.id).forEach((room) => {
+      roomMap.set(room.id, room);
+    });
+  });
+
+  return [...roomMap.values()];
 }
 
 function serializePlaylistEpisode(item) {
@@ -839,7 +861,7 @@ app.get('/api/videos/:videoId/rooms', authRequired, (req, res) => {
     return;
   }
 
-  const rooms = listRoomsByVideo(video.id).map(serializeRoom);
+  const rooms = listRoomsLinkedToVideo(video.id).map(serializeRoom);
   res.json({ rooms });
 });
 
@@ -1332,7 +1354,8 @@ io.on('connection', (socket) => {
     const gateEpisode = episodes[gateEpisodeIndex] || null;
     const gateHash = normalizeHash(gateEpisode?.contentHash || '');
 
-    if (!gateHash || !isRoomEpisodeVerified(roomId, socket.data.userId, gateEpisodeIndex, gateHash)) {
+    const skipGateForEpisodeSwitch = action === 'episode-switch';
+    if (!skipGateForEpisodeSwitch && (!gateHash || !isRoomEpisodeVerified(roomId, socket.data.userId, gateEpisodeIndex, gateHash))) {
       const requiredPayload = buildLocalFileRequiredPayload(roomId, {
         ...prev,
         episodeIndex: gateEpisodeIndex,
