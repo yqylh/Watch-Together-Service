@@ -9,9 +9,9 @@
   <body>
     <div id="app" class="container page-shell">
       <div class="header topbar site-topbar">
-        <div>
+        <div class="topbar-title">
           <h1 id="roomTitle">放映室</h1>
-          <p class="small" id="authInfo">鉴权中...</p>
+          <span class="small" id="authInfo">鉴权中...</span>
         </div>
         <div class="topbar-right">
           <div class="nav topnav">
@@ -29,47 +29,80 @@
       </div>
 
       <div id="roomApp" class="room-layout hidden">
-        <div class="card room-main-card">
-          <video id="watchVideo" class="watch-video" controls></video>
+        <div id="roomSidePanel" class="card room-side-card room-left-card">
+          <input id="joinCam" type="checkbox" class="hidden" />
+          <input id="joinMic" type="checkbox" class="hidden" />
+          <div class="flex left-media-controls">
+            <button id="toggleCamBtn" type="button" class="secondary left-compact-btn">开启摄像头</button>
+            <button id="toggleMicBtn" type="button" class="secondary left-compact-btn">开启麦克风</button>
+          </div>
 
-          <div class="flex player-controls">
-            <label for="playbackRate">倍速</label>
-            <select id="playbackRate" style="width: auto">
-              <option value="0.5">0.5x</option>
-              <option value="0.75">0.75x</option>
-              <option value="1" selected>1.0x</option>
-              <option value="1.25">1.25x</option>
-              <option value="1.5">1.5x</option>
-              <option value="1.75">1.75x</option>
-              <option value="2">2.0x</option>
-            </select>
-            <button id="fullscreenBtn" type="button" class="secondary">全屏</button>
-            <label for="videoVolume">视频音量</label>
-            <input id="videoVolume" type="range" min="0" max="100" value="100" style="width: 120px" />
-            <button id="videoMuteBtn" type="button" class="secondary">视频静音</button>
-            <label for="voiceVolume">语音音量</label>
-            <input id="voiceVolume" type="range" min="0" max="100" value="100" style="width: 120px" />
-            <button id="voiceMuteBtn" type="button" class="secondary">语音静音</button>
-            <span class="small hidden" id="autoplayCountdown"></span>
-            <button id="cancelAutoplayBtn" type="button" class="secondary hidden">取消自动下一集</button>
-            <button id="deleteRoomBtn" class="danger hidden">删除放映室</button>
-            <span class="small" id="watchStatus">尚未加入房间</span>
-            <span class="small" id="playbackFormInfo"></span>
+          <div class="room-tabs">
+            <button type="button" class="room-tab-btn left-compact-btn is-active" data-room-tab="leftWallPanel">视频墙</button>
+            <button type="button" class="room-tab-btn left-compact-btn" data-room-tab="leftChatPanel">聊天</button>
+            <button type="button" class="room-tab-btn left-compact-btn" data-room-tab="leftMemberPanel">成员</button>
+          </div>
+
+          <div id="leftWallPanel" class="room-tab-panel is-active">
+            <div class="video-wall-grid">
+              <div id="localVideoTile" class="video-tile">
+                <video id="localVideo" autoplay muted playsinline></video>
+                <div id="localVideoLabel" class="video-tile-label">你</div>
+              </div>
+              <div id="remoteGrid" class="video-wall-remote"></div>
+            </div>
+          </div>
+
+          <div id="leftChatPanel" class="room-tab-panel">
+            <div id="chatList" class="chat-list chat-list-panel"></div>
+            <form id="chatForm" style="margin-top: 8px">
+              <div class="form-row">
+                <input id="chatInput" placeholder="输入消息" />
+              </div>
+              <button type="submit">发送</button>
+            </form>
+          </div>
+
+          <div id="leftMemberPanel" class="room-tab-panel">
+            <div id="participantList" class="participant-list"></div>
           </div>
         </div>
 
-        <div id="roomSidePanel" class="card room-side-card">
-          <div class="room-side-head">
-            <h3>成员视频墙</h3>
-            <button id="collapseSidePanelBtn" type="button" class="secondary">隐藏右栏</button>
+        <div class="card room-main-card">
+          <video id="watchVideo" class="watch-video" controls></video>
+          <div class="video-control-strip">
+            <div class="video-control-item">
+              <label for="playbackRate">倍速</label>
+              <select id="playbackRate">
+                <option value="0.5">0.5x</option>
+                <option value="0.75">0.75x</option>
+                <option value="1" selected>1.0x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+                <option value="1.75">1.75x</option>
+                <option value="2">2.0x</option>
+              </select>
+            </div>
+            <div class="video-control-item">
+              <label for="videoVolume">视频音量</label>
+              <input id="videoVolume" class="video-control-range" type="range" min="0" max="100" value="100" />
+            </div>
+            <button id="videoMuteBtn" type="button" class="secondary">视频静音</button>
+            <div class="video-control-item">
+              <label for="voiceVolume">语音音量</label>
+              <input id="voiceVolume" class="video-control-range" type="range" min="0" max="100" value="100" />
+            </div>
+            <button id="voiceMuteBtn" type="button" class="secondary">语音静音</button>
+            <button id="fullscreenBtn" type="button" class="secondary">全屏</button>
+            <span class="small hidden" id="autoplayCountdown"></span>
+            <button id="cancelAutoplayBtn" type="button" class="secondary hidden">取消自动下一集</button>
+            <button id="toggleLeftPanelBtn" type="button" class="secondary">隐藏左栏</button>
+            <button id="toggleRightPanelBtn" type="button" class="secondary">隐藏右栏</button>
           </div>
-          <div class="small">所有成员画面同屏展示，人数增加时自动等比例缩放。</div>
+        </div>
 
+        <div class="card room-right-card">
           <div class="flex room-join-controls">
-            <input id="joinCam" type="checkbox" class="hidden" />
-            <input id="joinMic" type="checkbox" class="hidden" />
-            <button id="toggleCamBtn" type="button" class="secondary">开启摄像头</button>
-            <button id="toggleMicBtn" type="button" class="secondary">开启麦克风</button>
             <button id="verifyFilesBtn" type="button" class="secondary">选择文件并校验</button>
             <button id="joinBtn">加入</button>
             <button id="leaveBtn" class="secondary">离开</button>
@@ -89,42 +122,11 @@
           </div>
           <div id="verifyStatus" class="small"></div>
 
-          <div class="video-wall-grid">
-            <div id="localVideoTile" class="video-tile">
-              <video id="localVideo" autoplay muted playsinline></video>
-              <div id="localVideoLabel" class="video-tile-label">你</div>
-            </div>
-            <div id="remoteGrid" class="video-wall-remote"></div>
-          </div>
-
-          <div class="room-tabs">
-            <button type="button" class="room-tab-btn is-active" data-room-tab="episodeTabPanel">剧集</button>
-            <button type="button" class="room-tab-btn" data-room-tab="chatTabPanel">聊天</button>
-            <button type="button" class="room-tab-btn" data-room-tab="memberTabPanel">成员</button>
-          </div>
-
-          <div id="episodeTabPanel" class="room-tab-panel is-active">
+          <div class="episode-panel">
+            <h3>剧集</h3>
             <div id="episodeList" class="room-list"></div>
           </div>
-
-          <div id="chatTabPanel" class="room-tab-panel">
-            <div id="chatList" class="chat-list chat-list-panel"></div>
-            <form id="chatForm" style="margin-top: 8px">
-              <div class="form-row">
-                <input id="chatInput" placeholder="输入消息" />
-              </div>
-              <button type="submit">发送</button>
-            </form>
-          </div>
-
-          <div id="memberTabPanel" class="room-tab-panel">
-            <div id="participantList" class="participant-list"></div>
-          </div>
         </div>
-
-        <button id="expandSidePanelBtn" type="button" class="secondary side-expand-btn hidden">
-          展开成员侧栏
-        </button>
       </div>
     </div>
 

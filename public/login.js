@@ -25,7 +25,7 @@ createApp({
       try {
         const result = await apiFetch('/api/auth/me');
         this.currentUser = result.user || null;
-        this.authStatus = this.currentUser ? '登录状态有效' : '请登录或注册';
+        this.authStatus = this.currentUser ? '' : '请登录或注册';
       } catch (_err) {
         this.currentUser = null;
         this.authStatus = '请登录或注册';

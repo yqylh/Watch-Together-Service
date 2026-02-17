@@ -51,7 +51,7 @@ hr {
 }
 
 .container {
-  max-width: 1240px;
+  max-width: min(1920px, 98vw);
   margin: 0 auto;
   padding: 26px 18px 44px;
 }
@@ -62,7 +62,7 @@ hr {
 
 .header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 18px;
@@ -76,17 +76,37 @@ hr {
   position: sticky;
   top: 8px;
   z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
   background: rgba(243, 244, 239, 0.72);
   backdrop-filter: blur(10px);
   border-radius: 16px;
   padding: 10px 12px;
 }
 
+.topbar-title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
 .topbar-right {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: nowrap;
   gap: 8px;
+  margin-left: auto;
+}
+
+.site-topbar .topnav,
+.site-topbar .top-auth {
+  flex-wrap: nowrap;
 }
 
 .top-auth {
@@ -147,8 +167,9 @@ hr {
   display: grid;
   gap: 16px;
   grid-template-columns: 1fr;
-  --room-side-current: 360px;
-  --room-video-min-height: 380px;
+  --room-left-current: 300px;
+  --room-right-current: 360px;
+  --room-video-min-height: 420px;
 }
 
 .two-col {
@@ -165,8 +186,31 @@ hr {
   }
 
   .room-layout {
-    grid-template-columns: minmax(0, 1fr) minmax(300px, var(--room-side-current));
+    grid-template-columns: minmax(0, 1fr) minmax(320px, var(--room-right-current));
     align-items: start;
+  }
+
+  .room-layout.side-collapsed-right {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .room-layout.side-collapsed-right .room-main-card {
+    grid-column: 1;
+  }
+
+  .room-left-card {
+    grid-column: 1 / -1;
+  }
+
+  .room-main-card {
+    grid-column: 1;
+  }
+
+  .room-right-card {
+    grid-column: 2;
+    position: sticky;
+    top: 92px;
+    align-self: start;
   }
 
   .grid.two-col {
@@ -175,6 +219,59 @@ hr {
 
   .auth-columns {
     grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  }
+}
+
+@media (min-width: 1320px) {
+  .room-layout {
+    grid-template-columns: minmax(240px, var(--room-left-current)) minmax(0, 1fr) minmax(320px, var(--room-right-current));
+  }
+
+  .room-left-card {
+    grid-column: 1;
+    position: sticky;
+    top: 92px;
+    align-self: start;
+  }
+
+  .room-main-card {
+    grid-column: 2;
+  }
+
+  .room-right-card {
+    grid-column: 3;
+  }
+
+  .room-layout.side-collapsed-left:not(.side-collapsed-right) {
+    grid-template-columns: minmax(0, 1fr) minmax(320px, var(--room-right-current));
+  }
+
+  .room-layout.side-collapsed-left:not(.side-collapsed-right) .room-main-card {
+    grid-column: 1;
+  }
+
+  .room-layout.side-collapsed-left:not(.side-collapsed-right) .room-right-card {
+    grid-column: 2;
+  }
+
+  .room-layout.side-collapsed-right:not(.side-collapsed-left) {
+    grid-template-columns: minmax(240px, var(--room-left-current)) minmax(0, 1fr);
+  }
+
+  .room-layout.side-collapsed-right:not(.side-collapsed-left) .room-left-card {
+    grid-column: 1;
+  }
+
+  .room-layout.side-collapsed-right:not(.side-collapsed-left) .room-main-card {
+    grid-column: 2;
+  }
+
+  .room-layout.side-collapsed-left.side-collapsed-right {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .room-layout.side-collapsed-left.side-collapsed-right .room-main-card {
+    grid-column: 1;
   }
 }
 
@@ -543,22 +640,22 @@ button:disabled {
   border-radius: 12px;
 }
 
-.watch-video,
-.video-item video {
-  margin-bottom: 8px;
-}
-
 .watch-video {
   aspect-ratio: 16 / 9;
   width: 100%;
   height: auto;
   object-fit: contain;
+  margin: 0 auto;
+}
+
+.video-item video {
+  margin-bottom: 8px;
 }
 
 @media (min-width: 980px) {
   .watch-video {
     min-height: var(--room-video-min-height);
-    max-height: min(78vh, 860px);
+    max-height: min(84vh, 920px);
   }
 }
 
@@ -570,17 +667,72 @@ button:disabled {
 
 .room-main-card {
   min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 10px;
 }
 
-.player-controls {
-  margin-top: 8px;
+.video-control-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.82);
 }
 
-.room-side-card {
-  position: sticky;
-  top: 92px;
+.video-control-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.video-control-item label {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.video-control-item select {
+  width: auto;
+  min-width: 90px;
+}
+
+.video-control-range {
+  width: 150px;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+}
+
+.room-side-card,
+.room-right-card {
   display: grid;
   gap: 12px;
+}
+
+.left-media-controls {
+  margin-top: 2px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  width: 100%;
+}
+
+.room-left-card .room-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.left-compact-btn {
+  min-height: 32px;
+  padding: 4px 8px;
+  font-size: 12px;
+  line-height: 1.2;
+  border-radius: 10px;
 }
 
 .room-side-head {
@@ -699,23 +851,24 @@ button:disabled {
 }
 
 .chat-list-panel {
-  max-height: 280px;
+  max-height: 320px;
   overflow-y: auto;
 }
 
-.side-expand-btn {
-  position: fixed;
-  right: 16px;
-  bottom: 16px;
-  z-index: 28;
-  box-shadow: var(--shadow-strong);
+.episode-panel {
+  display: grid;
+  gap: 8px;
 }
 
-.room-layout.side-collapsed {
-  grid-template-columns: 1fr;
+.episode-panel h3 {
+  margin: 0;
 }
 
-.room-layout.side-collapsed .room-side-card {
+.room-layout.side-collapsed-left .room-left-card {
+  display: none;
+}
+
+.room-layout.side-collapsed-right .room-right-card {
   display: none;
 }
 
@@ -761,7 +914,13 @@ button:disabled {
 
   .topbar-right {
     width: 100%;
-    align-items: stretch;
+    flex-wrap: wrap;
+    justify-content: space-between;
+  }
+
+  .topbar-title {
+    width: 100%;
+    white-space: normal;
   }
 
   .top-auth {
@@ -772,9 +931,8 @@ button:disabled {
     position: static;
   }
 
-  .side-expand-btn {
-    right: 12px;
-    bottom: 12px;
+  .room-right-card {
+    position: static;
   }
 }
 

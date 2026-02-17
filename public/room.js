@@ -5,8 +5,8 @@ const authInfoEl = document.getElementById('authInfo');
 const currentUserEl = document.getElementById('currentUser');
 const logoutBtn = document.getElementById('logoutBtn');
 const roomAppEl = document.getElementById('roomApp');
-const collapseSidePanelBtn = document.getElementById('collapseSidePanelBtn');
-const expandSidePanelBtn = document.getElementById('expandSidePanelBtn');
+const toggleLeftPanelBtn = document.getElementById('toggleLeftPanelBtn');
+const toggleRightPanelBtn = document.getElementById('toggleRightPanelBtn');
 const roomTabButtons = Array.from(document.querySelectorAll('.room-tab-btn'));
 const roomTabPanels = Array.from(document.querySelectorAll('.room-tab-panel'));
 
@@ -20,9 +20,6 @@ const voiceVolumeEl = document.getElementById('voiceVolume');
 const voiceMuteBtn = document.getElementById('voiceMuteBtn');
 const autoplayCountdownEl = document.getElementById('autoplayCountdown');
 const cancelAutoplayBtn = document.getElementById('cancelAutoplayBtn');
-const watchStatusEl = document.getElementById('watchStatus');
-const playbackFormInfoEl = document.getElementById('playbackFormInfo');
-const deleteRoomBtn = document.getElementById('deleteRoomBtn');
 const episodeListEl = document.getElementById('episodeList');
 
 const verifyFilesBtn = document.getElementById('verifyFilesBtn');
@@ -70,7 +67,6 @@ let joiningRoom = false;
 let localStream = null;
 let playbackSuppressed = false;
 let seekDebounce = null;
-let roomData = null;
 let currentUser = null;
 let episodes = [];
 let currentEpisodeIndex = 0;
@@ -141,13 +137,28 @@ async function apiFetch(url, options = {}) {
 }
 
 function setStatus(text) {
-  watchStatusEl.textContent = text;
+  void text;
+}
+
+function ensureJoinedForAction(actionLabel) {
+  const label = String(actionLabel || '操作');
+  if (joined) {
+    return true;
+  }
+  if (joiningRoom) {
+    setVerifyStatus(`正在加入房间，请稍后再${label}`);
+  } else {
+    setVerifyStatus(`请先加入房间后再${label}`);
+  }
+  updateJoinStateUI();
+  return false;
 }
 
 function applyAutoLayoutBalance() {
   const viewportWidth = Number(window.innerWidth || 0);
-  if (viewportWidth < 980 || roomAppEl.classList.contains('side-collapsed')) {
-    roomAppEl.style.removeProperty('--room-side-current');
+  if (viewportWidth < 980) {
+    roomAppEl.style.removeProperty('--room-left-current');
+    roomAppEl.style.removeProperty('--room-right-current');
     roomAppEl.style.removeProperty('--room-video-min-height');
     return;
   }
@@ -158,23 +169,61 @@ function applyAutoLayoutBalance() {
     return;
   }
 
-  const gridGap = 16;
-  const minSideWidth = 300;
-  const maxSideWidth = Math.max(minSideWidth, Math.min(440, Math.round(containerWidth * 0.38)));
-  const targetVideoHeightByViewport = Math.max(340, Math.min(760, Math.round(viewportHeight * 0.56)));
-  const minMainWidthForTarget = Math.max(620, Math.round((targetVideoHeightByViewport * 16) / 9));
+  const leftCollapsed = roomAppEl.classList.contains('side-collapsed-left');
+  const rightCollapsed = roomAppEl.classList.contains('side-collapsed-right');
+  const useThreeColumns = viewportWidth >= 1320 && !leftCollapsed && !rightCollapsed;
+  const useLeftMainColumns = viewportWidth >= 1320 && !leftCollapsed && rightCollapsed;
 
-  let sideWidth = containerWidth - minMainWidthForTarget - gridGap;
-  sideWidth = Math.max(minSideWidth, Math.min(sideWidth, maxSideWidth));
+  const gapSize = 16;
+  const gapCount = useThreeColumns ? 2 : (useLeftMainColumns ? 1 : (rightCollapsed ? 0 : 1));
+  const totalGap = gapSize * gapCount;
 
-  const mainWidth = Math.max(0, containerWidth - sideWidth - gridGap);
+  const minRightWidth = 320;
+  const maxRightWidth = Math.max(minRightWidth, Math.min(460, Math.round(containerWidth * 0.32)));
+  let rightWidth = rightCollapsed ? 0 : Math.round(containerWidth * 0.24);
+  if (!rightCollapsed) {
+    rightWidth = Math.max(minRightWidth, Math.min(rightWidth, maxRightWidth));
+  }
+
+  let leftWidth = 0;
+  if (useThreeColumns || useLeftMainColumns) {
+    const minLeftWidth = 240;
+    const maxLeftWidth = Math.max(minLeftWidth, Math.min(380, Math.round(containerWidth * 0.24)));
+    leftWidth = Math.round(containerWidth * 0.18);
+    leftWidth = Math.max(minLeftWidth, Math.min(leftWidth, maxLeftWidth));
+  }
+
+  const targetVideoHeightByViewport = Math.max(340, Math.min(840, Math.round(viewportHeight * 0.62)));
+  const minMainWidthForTarget = Math.max(640, Math.round((targetVideoHeightByViewport * 16) / 9));
+
+  let mainWidth = containerWidth - (rightCollapsed ? 0 : rightWidth) - leftWidth - totalGap;
+  if (mainWidth < minMainWidthForTarget) {
+    let shortfall = minMainWidthForTarget - mainWidth;
+    if (!rightCollapsed) {
+      const maxRightShrink = rightWidth - minRightWidth;
+      const rightShrink = Math.min(maxRightShrink, shortfall);
+      rightWidth -= rightShrink;
+      shortfall -= rightShrink;
+    }
+
+    if (shortfall > 0 && useThreeColumns) {
+      const minLeftWidth = 240;
+      const maxLeftShrink = leftWidth - minLeftWidth;
+      const leftShrink = Math.min(maxLeftShrink, shortfall);
+      leftWidth -= leftShrink;
+      shortfall -= leftShrink;
+    }
+    mainWidth = containerWidth - (rightCollapsed ? 0 : rightWidth) - leftWidth - totalGap;
+  }
+
   const targetVideoHeightByWidth = Math.round((mainWidth * 9) / 16);
   const targetVideoMinHeight = Math.max(
     320,
-    Math.min(760, targetVideoHeightByViewport, targetVideoHeightByWidth || targetVideoHeightByViewport),
+    Math.min(840, targetVideoHeightByViewport, targetVideoHeightByWidth || targetVideoHeightByViewport),
   );
 
-  roomAppEl.style.setProperty('--room-side-current', `${Math.round(sideWidth)}px`);
+  roomAppEl.style.setProperty('--room-left-current', `${Math.round(leftWidth)}px`);
+  roomAppEl.style.setProperty('--room-right-current', `${Math.round(rightWidth)}px`);
   roomAppEl.style.setProperty('--room-video-min-height', `${Math.round(targetVideoMinHeight)}px`);
 }
 
@@ -188,13 +237,20 @@ function scheduleAutoLayoutBalance() {
   });
 }
 
-function setSidePanelCollapsed(collapsed) {
-  roomAppEl.classList.toggle('side-collapsed', Boolean(collapsed));
-  if (collapsed) {
-    expandSidePanelBtn.classList.remove('hidden');
-  } else {
-    expandSidePanelBtn.classList.add('hidden');
+function updateSidePanelToggleButtons() {
+  const leftCollapsed = roomAppEl.classList.contains('side-collapsed-left');
+  const rightCollapsed = roomAppEl.classList.contains('side-collapsed-right');
+  toggleLeftPanelBtn.textContent = leftCollapsed ? '显示左栏' : '隐藏左栏';
+  toggleRightPanelBtn.textContent = rightCollapsed ? '显示右栏' : '隐藏右栏';
+}
+
+function toggleSidePanel(side) {
+  if (side === 'left') {
+    roomAppEl.classList.toggle('side-collapsed-left');
+  } else if (side === 'right') {
+    roomAppEl.classList.toggle('side-collapsed-right');
   }
+  updateSidePanelToggleButtons();
   scheduleAutoLayoutBalance();
 }
 
@@ -219,17 +275,6 @@ function mapSourceTypeLabel(sourceType) {
     return '本地文件模式（仅 hash）';
   }
   return '本地文件模式';
-}
-
-function updatePlaybackFormInfo() {
-  const episode = episodes[normalizeEpisodeIndex(currentEpisodeIndex)] || null;
-  if (!episode) {
-    playbackFormInfoEl.textContent = '';
-    return;
-  }
-  const sourceLabel = mapSourceTypeLabel(episode.sourceType);
-  const playingFrom = '本地文件';
-  playbackFormInfoEl.textContent = `当前视频形式: ${sourceLabel} | 当前播放来源: ${playingFrom}`;
 }
 
 function setVerifyStatus(text) {
@@ -420,6 +465,8 @@ function updateJoinStateUI() {
 
   joinBtn.disabled = joining || inRoom || !allVerified;
   leaveBtn.disabled = joining || !inRoom;
+  toggleCamBtn.disabled = joining || !inRoom;
+  toggleMicBtn.disabled = joining || !inRoom;
 
   if (joining) {
     joinStateBadgeEl.textContent = '加入中';
@@ -882,7 +929,7 @@ function correctPlaybackDrift(options = {}) {
     clearMicroAdjustTimer();
     setPlaybackSuppressed(260);
     watchVideoEl.currentTime = Math.max(0, targetTime);
-    watchStatusEl.textContent = `已对齐房间进度 (${Math.round(drift * 1000)}ms)`;
+    setStatus(`已对齐房间进度 (${Math.round(drift * 1000)}ms)`);
     applyRoomPlaybackRate(roomRate);
     return;
   }
@@ -900,7 +947,7 @@ function correctPlaybackDrift(options = {}) {
     watchVideoEl.playbackRate = adjustedRate;
     microAdjustTimer = setTimeout(() => {
       applyRoomPlaybackRate(roomRate);
-      watchStatusEl.textContent = `漂移已微调 (${Math.round(drift * 1000)}ms)`;
+      setStatus(`漂移已微调 (${Math.round(drift * 1000)}ms)`);
     }, 1200);
     return;
   }
@@ -951,8 +998,12 @@ function renderEpisodeList() {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = idx === currentEpisodeIndex ? '' : 'secondary';
+    btn.disabled = !joined || joiningRoom;
     btn.textContent = `第 ${idx + 1} 集: ${ep.title}`;
     btn.addEventListener('click', async () => {
+      if (!ensureJoinedForAction('切换剧集')) {
+        return;
+      }
       await switchEpisode(idx, true, false);
     });
 
@@ -1010,7 +1061,6 @@ async function setEpisode(index, options = {}) {
     }
   }
 
-  updatePlaybackFormInfo();
   renderEpisodeList();
 }
 
@@ -1264,16 +1314,8 @@ function leaveRoom() {
   updateJoinStateUI();
 }
 
-function canDeleteRoom() {
-  if (!currentUser || !roomData?.room) {
-    return false;
-  }
-  return currentUser.role === 'root' || roomData.room.createdByUserId === currentUser.id;
-}
-
 async function initRoomInfo() {
   const result = await apiFetch(`/api/rooms/${roomId}`);
-  roomData = result;
 
   const syncConfig = result.syncConfig || {};
   driftSoftThresholdSec = Math.max(0.05, Number(syncConfig.driftSoftThresholdMs || 200) / 1000);
@@ -1289,10 +1331,6 @@ async function initRoomInfo() {
   episodeProgressByIndex = new Map(
     (result.progress?.episodes || []).map((item) => [Number(item.episodeIndex || 0), item]),
   );
-
-  if (canDeleteRoom()) {
-    deleteRoomBtn.classList.remove('hidden');
-  }
 
   await setEpisode(currentEpisodeIndex, {
     resumeTime: Number(result.state?.currentTime || 0),
@@ -1315,12 +1353,6 @@ async function initRoomInfo() {
   } else {
     setVerifyStatus('请先点击“选择文件并校验”，补齐全部剧集后再加入');
   }
-}
-
-async function deleteCurrentRoom() {
-  await apiFetch(`/api/rooms/${roomId}`, {
-    method: 'DELETE',
-  });
 }
 
 function bindSocketEvents() {
@@ -1444,6 +1476,9 @@ leaveBtn.addEventListener('click', () => {
 });
 
 toggleCamBtn.addEventListener('click', () => {
+  if (!ensureJoinedForAction('开启或关闭摄像头')) {
+    return;
+  }
   joinCamEl.checked = !joinCamEl.checked;
   applyMediaPreferenceChange().catch((err) => {
     console.error('toggle camera failed', err);
@@ -1451,18 +1486,21 @@ toggleCamBtn.addEventListener('click', () => {
 });
 
 toggleMicBtn.addEventListener('click', () => {
+  if (!ensureJoinedForAction('开启或关闭麦克风')) {
+    return;
+  }
   joinMicEl.checked = !joinMicEl.checked;
   applyMediaPreferenceChange().catch((err) => {
     console.error('toggle microphone failed', err);
   });
 });
 
-collapseSidePanelBtn.addEventListener('click', () => {
-  setSidePanelCollapsed(true);
+toggleLeftPanelBtn.addEventListener('click', () => {
+  toggleSidePanel('left');
 });
 
-expandSidePanelBtn.addEventListener('click', () => {
-  setSidePanelCollapsed(false);
+toggleRightPanelBtn.addEventListener('click', () => {
+  toggleSidePanel('right');
 });
 
 roomTabButtons.forEach((btn) => {
@@ -1585,14 +1623,6 @@ watchVideoEl.addEventListener('ended', () => {
   }
 });
 
-deleteRoomBtn.addEventListener('click', async () => {
-  try {
-    await deleteCurrentRoom();
-  } catch (err) {
-    alert(err.message);
-  }
-});
-
 window.addEventListener('beforeunload', () => {
   leaveRoom();
   clearLocalObjectUrl();
@@ -1647,8 +1677,10 @@ async function checkAuth() {
 }
 
 (async function init() {
-  switchRoomTab('episodeTabPanel');
-  setSidePanelCollapsed(false);
+  switchRoomTab('leftWallPanel');
+  roomAppEl.classList.remove('side-collapsed-left', 'side-collapsed-right');
+  updateSidePanelToggleButtons();
+  scheduleAutoLayoutBalance();
   joinCamEl.checked = false;
   joinMicEl.checked = false;
   updateMediaToggleButtons();

@@ -67,7 +67,7 @@
       return false;
     }
 
-    ctx.authStatus = requireRoot ? `已登录 Root: ${user.username}` : '登录状态有效';
+    ctx.authStatus = '';
     if (Object.prototype.hasOwnProperty.call(ctx, 'accessDenied')) {
       ctx.accessDenied = '';
     }
