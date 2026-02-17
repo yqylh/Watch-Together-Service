@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>放映室 - 一起看服务</title>
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1 id="roomTitle">放映室</h1>
+        <div class="nav">
+          <a href="/">主页</a>
+        </div>
+      </div>
+
+      <div class="columns">
+        <div class="card">
+          <video id="watchVideo" class="watch-video" controls></video>
+
+          <div class="flex" style="margin-top: 8px">
+            <label for="playbackRate">倍速</label>
+            <select id="playbackRate" style="width: auto">
+              <option value="0.5">0.5x</option>
+              <option value="0.75">0.75x</option>
+              <option value="1" selected>1.0x</option>
+              <option value="1.25">1.25x</option>
+              <option value="1.5">1.5x</option>
+              <option value="1.75">1.75x</option>
+              <option value="2">2.0x</option>
+            </select>
+            <button id="fullscreenBtn" type="button" class="secondary">全屏</button>
+            <label for="videoVolume">视频音量</label>
+            <input id="videoVolume" type="range" min="0" max="100" value="100" style="width: 120px" />
+            <button id="videoMuteBtn" type="button" class="secondary">视频静音</button>
+            <label for="voiceVolume">语音音量</label>
+            <input id="voiceVolume" type="range" min="0" max="100" value="100" style="width: 120px" />
+            <button id="voiceMuteBtn" type="button" class="secondary">语音静音</button>
+            <span class="small hidden" id="autoplayCountdown"></span>
+            <button id="cancelAutoplayBtn" type="button" class="secondary hidden">取消自动下一集</button>
+            <button id="deleteRoomBtn" class="danger hidden">删除放映室</button>
+            <span class="small" id="watchStatus">尚未加入房间</span>
+          </div>
+
+          <hr />
+
+          <h3>剧集列表</h3>
+          <div id="episodeList" class="room-list"></div>
+
+          <hr />
+
+          <h3>本地音视频</h3>
+          <div class="flex">
+            <label><input id="joinCam" type="checkbox" checked /> 打开摄像头</label>
+            <label><input id="joinMic" type="checkbox" checked /> 打开麦克风</label>
+          </div>
+          <video id="localVideo" autoplay muted playsinline></video>
+
+          <h3>远端成员视频</h3>
+          <div id="remoteGrid" class="remote-grid"></div>
+        </div>
+
+        <div class="card">
+          <h3>加入房间</h3>
+          <div class="form-row">
+            <label for="displayName">昵称</label>
+            <input id="displayName" placeholder="例如：李四" />
+          </div>
+          <button id="joinBtn">加入</button>
+          <button id="leaveBtn" class="secondary">离开</button>
+
+          <hr />
+
+          <h3>成员</h3>
+          <div id="participantList" class="participant-list"></div>
+
+          <hr />
+
+          <h3>聊天</h3>
+          <div id="chatList" class="chat-list" style="max-height: 280px; overflow-y: auto"></div>
+          <form id="chatForm" style="margin-top: 8px">
+            <div class="form-row">
+              <input id="chatInput" placeholder="输入消息" />
+            </div>
+            <button type="submit">发送</button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/assets/room.js"></script>
+  </body>
+</html>

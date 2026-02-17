@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>视频详情 - 一起看服务</title>
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>视频详情</h1>
+        <div class="nav">
+          <a href="/">主页</a>
+          <a href="/admin">Root 管理</a>
+        </div>
+      </div>
+
+      <div class="columns">
+        <div class="card">
+          <h2 id="videoTitle">加载中...</h2>
+          <video id="videoPlayer" class="watch-video" controls></video>
+          <div id="videoMeta" class="small"></div>
+          <div class="small" id="videoLink"></div>
+        </div>
+
+        <div class="card">
+          <h3>创建放映室</h3>
+          <form id="createRoomForm">
+            <div class="form-row">
+              <label for="roomName">放映室名称</label>
+              <input id="roomName" name="roomName" placeholder="可选" />
+            </div>
+            <div class="form-row">
+              <label for="creatorName">你的昵称</label>
+              <input id="creatorName" name="creatorName" required />
+            </div>
+            <button type="submit">创建并进入</button>
+            <div id="roomStatus" class="status"></div>
+          </form>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top: 16px">
+        <h2>这个视频的放映室</h2>
+        <div id="roomList" class="room-list"></div>
+      </div>
+    </div>
+
+    <script src="/assets/video.js"></script>
+  </body>
+</html>
