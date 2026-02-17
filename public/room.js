@@ -33,6 +33,8 @@ const localFileStatusEl = document.getElementById('localFileStatus');
 
 const joinCamEl = document.getElementById('joinCam');
 const joinMicEl = document.getElementById('joinMic');
+const toggleCamBtn = document.getElementById('toggleCamBtn');
+const toggleMicBtn = document.getElementById('toggleMicBtn');
 const joinBtn = document.getElementById('joinBtn');
 const leaveBtn = document.getElementById('leaveBtn');
 
@@ -291,6 +293,17 @@ function removeRemoteVideo(peerId) {
   }
 }
 
+function updateMediaToggleButtons() {
+  const camOn = Boolean(joinCamEl.checked);
+  const micOn = Boolean(joinMicEl.checked);
+
+  toggleCamBtn.textContent = camOn ? '关闭摄像头' : '开启摄像头';
+  toggleMicBtn.textContent = micOn ? '关闭麦克风' : '开启麦克风';
+
+  toggleCamBtn.classList.toggle('secondary', !camOn);
+  toggleMicBtn.classList.toggle('secondary', !micOn);
+}
+
 function applyVideoVolume() {
   watchVideoEl.volume = videoVolumeLevel;
   watchVideoEl.muted = videoMuted;
@@ -415,26 +428,95 @@ async function createPeerConnection(peerId, peerName, shouldCreateOffer) {
 }
 
 async function prepareLocalMedia() {
-  const wantVideo = joinCamEl.checked;
-  const wantAudio = joinMicEl.checked;
-
-  if (!wantVideo && !wantAudio) {
-    localStream = null;
+  if (!joinCamEl.checked && !joinMicEl.checked) {
+    if (localStream) {
+      localStream.getTracks().forEach((track) => track.stop());
+      localStream = null;
+    }
     localVideoEl.srcObject = null;
+    updateMediaToggleButtons();
     return;
   }
 
+  let nextStream = null;
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({
-      video: wantVideo,
-      audio: wantAudio,
+    nextStream = await navigator.mediaDevices.getUserMedia({
+      video: joinCamEl.checked,
+      audio: joinMicEl.checked,
     });
-    localVideoEl.srcObject = localStream;
-    localVideoEl.volume = voiceVolumeLevel;
   } catch (err) {
-    localStream = null;
-    localVideoEl.srcObject = null;
-    alert(`获取本地音视频失败，将仅使用聊天与同步播放: ${err.message}`);
+    if (joinCamEl.checked && joinMicEl.checked) {
+      try {
+        nextStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        joinMicEl.checked = false;
+      } catch (_videoErr) {
+        try {
+          nextStream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
+          joinCamEl.checked = false;
+        } catch (_audioErr) {
+          joinCamEl.checked = false;
+          joinMicEl.checked = false;
+        }
+      }
+    } else {
+      if (joinCamEl.checked) {
+        joinCamEl.checked = false;
+      }
+      if (joinMicEl.checked) {
+        joinMicEl.checked = false;
+      }
+    }
+
+    if (!nextStream) {
+      if (localStream) {
+        localStream.getTracks().forEach((track) => track.stop());
+      }
+      localStream = null;
+      localVideoEl.srcObject = null;
+      updateMediaToggleButtons();
+      alert(`获取本地音视频失败，将仅使用聊天与同步播放: ${err.message}`);
+      return;
+    }
+  }
+
+  if (localStream) {
+    localStream.getTracks().forEach((track) => track.stop());
+  }
+  localStream = nextStream;
+  localVideoEl.srcObject = localStream;
+  localVideoEl.volume = voiceVolumeLevel;
+  updateMediaToggleButtons();
+}
+
+async function rebuildPeerConnectionsForMediaChange() {
+  if (!joined || !socket) {
+    return;
+  }
+
+  const selfId = socket.id || '';
+  const targets = [];
+  for (const [id, name] of participants.entries()) {
+    if (selfId && id === selfId) {
+      continue;
+    }
+    targets.push({ id, name });
+  }
+
+  targets.forEach(({ id }) => closePeer(id));
+  for (const target of targets) {
+    try {
+      await createPeerConnection(target.id, target.name, true);
+    } catch (err) {
+      console.error('rebuild peer failed', err);
+    }
+  }
+}
+
+async function applyMediaPreferenceChange() {
+  await prepareLocalMedia();
+  if (joined) {
+    await rebuildPeerConnectionsForMediaChange();
+    setStatus('本地音视频设置已更新');
   }
 }
 
@@ -1323,6 +1405,20 @@ leaveBtn.addEventListener('click', () => {
   leaveRoom();
 });
 
+toggleCamBtn.addEventListener('click', () => {
+  joinCamEl.checked = !joinCamEl.checked;
+  applyMediaPreferenceChange().catch((err) => {
+    console.error('toggle camera failed', err);
+  });
+});
+
+toggleMicBtn.addEventListener('click', () => {
+  joinMicEl.checked = !joinMicEl.checked;
+  applyMediaPreferenceChange().catch((err) => {
+    console.error('toggle microphone failed', err);
+  });
+});
+
 collapseSidePanelBtn.addEventListener('click', () => {
   setSidePanelCollapsed(true);
 });
@@ -1511,6 +1607,9 @@ async function checkAuth() {
 (async function init() {
   switchRoomTab('episodeTabPanel');
   setSidePanelCollapsed(false);
+  joinCamEl.checked = false;
+  joinMicEl.checked = false;
+  updateMediaToggleButtons();
 
   const authed = await checkAuth();
   if (!authed) {
