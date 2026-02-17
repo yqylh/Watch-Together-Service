@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/assets/style.css" />
   </head>
   <body>
-    <div class="container page-shell">
+    <div id="app" class="container page-shell" v-cloak>
       <div class="header topbar">
         <div>
           <p class="eyebrow">Remote Watching Sync</p>
@@ -16,7 +16,10 @@
         <div class="nav topnav">
           <a href="/">登录</a>
           <a href="/upload">上传</a>
-          <a href="/videos">视频与列表</a>
+          <a href="/videos">视频</a>
+          <a href="/rooms">放映室</a>
+          <a href="/playlists">视频列表</a>
+          <a href="/playlists/create">创建列表</a>
           <a href="/admin">管理</a>
         </div>
       </div>
@@ -26,38 +29,38 @@
           <p class="eyebrow">WELCOME</p>
           <h2>进入你的放映空间</h2>
           <p class="small">登录后可上传视频、创建多集列表、发起放映室并和成员同步播放。</p>
-          <div class="status" id="authStatus">请登录或注册</div>
-          <div class="user-pill" id="currentUser">未登录</div>
+          <div class="status">{{ authStatus }}</div>
+          <div class="user-pill">{{ currentUser ? `已登录: ${currentUser.username} (${currentUser.role})` : '未登录' }}</div>
           <div class="flex" style="margin-top: 12px">
-            <button id="logoutBtn" type="button" class="secondary hidden">退出登录</button>
-            <a id="goUpload" class="button-like hidden" href="/upload">去上传</a>
-            <a id="goVideos" class="button-like hidden" href="/videos">去浏览视频</a>
+            <button v-if="currentUser" type="button" class="secondary" @click="logout">退出登录</button>
+            <a v-if="currentUser" class="button-like" href="/upload">去上传</a>
+            <a v-if="currentUser" class="button-like" href="/videos">去浏览视频</a>
           </div>
         </div>
 
         <div class="card stack-card">
-          <form id="loginForm" class="panel-block">
+          <form class="panel-block" @submit.prevent="submitLogin">
             <h3>登录</h3>
             <div class="form-row">
               <label for="loginUsername">用户名</label>
-              <input id="loginUsername" name="username" placeholder="例如: alice_01" required />
+              <input id="loginUsername" v-model.trim="loginForm.username" placeholder="例如: alice_01" required />
             </div>
             <div class="form-row">
               <label for="loginPassword">密码</label>
-              <input id="loginPassword" name="password" type="password" required />
+              <input id="loginPassword" v-model="loginForm.password" type="password" required />
             </div>
             <button type="submit">登录</button>
           </form>
 
-          <form id="registerForm" class="panel-block">
+          <form class="panel-block" @submit.prevent="submitRegister">
             <h3>注册</h3>
             <div class="form-row">
               <label for="registerUsername">用户名</label>
-              <input id="registerUsername" name="username" placeholder="3-32位小写字母数字下划线" required />
+              <input id="registerUsername" v-model.trim="registerForm.username" placeholder="3-32位小写字母数字下划线" required />
             </div>
             <div class="form-row">
               <label for="registerPassword">密码</label>
-              <input id="registerPassword" name="password" type="password" required />
+              <input id="registerPassword" v-model="registerForm.password" type="password" required />
             </div>
             <button type="submit">注册并登录</button>
           </form>
@@ -66,6 +69,8 @@
     </div>
 
     <script src="/assets/common.js"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="/assets/vue-shared.js"></script>
     <script src="/assets/login.js"></script>
   </body>
 </html>

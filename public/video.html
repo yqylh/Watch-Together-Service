@@ -7,53 +7,84 @@
     <link rel="stylesheet" href="/assets/style.css" />
   </head>
   <body>
-    <div class="container page-shell">
+    <div id="app" class="container page-shell" v-cloak>
       <div class="header topbar site-topbar">
         <div>
           <h1>视频详情</h1>
-          <p class="small" id="authStatus">鉴权中...</p>
+          <p class="small">{{ authStatus }}</p>
         </div>
         <div class="topbar-right">
           <div class="nav topnav">
             <a href="/upload">上传</a>
-            <a href="/videos">视频中心</a>
+            <a href="/videos">视频</a>
+            <a href="/rooms">放映室</a>
+            <a href="/playlists">视频列表</a>
+            <a href="/playlists/create">创建列表</a>
             <a href="/admin">管理</a>
           </div>
           <div class="top-auth">
-            <div class="user-pill" id="currentUser">未登录</div>
-            <button id="logoutBtn" class="secondary" type="button">退出</button>
+            <div class="user-pill">{{ currentUser ? `${currentUser.username} (${currentUser.role})` : '未登录' }}</div>
+            <button class="secondary" type="button" @click="logout">退出</button>
           </div>
         </div>
       </div>
 
-      <div id="videoContent" class="columns hidden">
+      <div v-if="videoError" class="card">
+        <h2>视频不存在或已删除</h2>
+        <div class="small">{{ videoError }}</div>
+      </div>
+
+      <div v-else-if="video" class="columns">
         <div class="card">
-          <h2 id="videoTitle">加载中...</h2>
-          <div id="videoCoverWrap" class="cover-wrap"></div>
-          <div id="videoMeta" class="small"></div>
-          <div class="small" id="videoLink"></div>
+          <h2>{{ video.title }}</h2>
+          <div class="cover-wrap">
+            <img v-if="video.coverUrl" :src="video.coverUrl" :alt="`${video.title} cover`" class="cover-image" />
+            <div v-else class="cover-empty">无封面</div>
+          </div>
+          <div class="small">
+            上传时间: {{ formatDate(video.createdAt) }} | 文件: {{ video.originalName }} | 大小: {{ formatBytes(video.size) }} |
+            来源: 本地模式（hash） | hash: {{ shortenHash(video.contentHash) }}
+          </div>
+          <div class="small">
+            唯一链接: <a :href="video.watchUrl">{{ locationOrigin }}{{ video.watchUrl }}</a>
+          </div>
         </div>
 
         <div class="card">
           <h3>创建放映室</h3>
-          <form id="createRoomForm">
+          <form @submit.prevent="createRoom">
             <div class="form-row">
               <label for="roomName">放映室名称</label>
-              <input id="roomName" name="roomName" placeholder="可选" />
+              <input id="roomName" v-model.trim="roomName" placeholder="可选" />
             </div>
             <button type="submit">创建并进入</button>
-            <div id="roomStatus" class="status"></div>
+            <div class="status">{{ roomStatus }}</div>
           </form>
         </div>
       </div>
 
-      <div class="card" style="margin-top: 16px" id="roomListCard">
+      <div class="card" style="margin-top: 16px" v-if="video">
         <h2>这个视频的放映室</h2>
-        <div id="roomList" class="card-grid room-grid"></div>
+        <div v-if="!video.rooms.length" class="small">当前视频还没有放映室</div>
+        <div v-else class="card-grid room-grid">
+          <article v-for="room in video.rooms" :key="room.id" class="room-card">
+            <a :href="`/rooms/${room.id}`" class="room-title">{{ room.name }}</a>
+            <div class="small">
+              创建者: {{ room.creatorName }} | 在线: {{ room.memberCount || 0 }} | 创建时间: {{ formatDate(room.createdAt) }}
+              | 续播: 第 {{ Number(room.latestEpisodeIndex || 0) + 1 }} 集 {{ formatSeconds(room.latestCurrentTime || 0) }}
+              | 累计观看: {{ formatSeconds(room.totalWatchedSeconds || 0) }}
+            </div>
+            <div v-if="canDeleteRoom(room)" class="flex">
+              <button class="danger" type="button" @click="deleteRoom(room)">删除放映室</button>
+            </div>
+          </article>
+        </div>
       </div>
     </div>
 
     <script src="/assets/common.js"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="/assets/vue-shared.js"></script>
     <script src="/assets/video.js"></script>
   </body>
 </html>

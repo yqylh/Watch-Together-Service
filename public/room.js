@@ -1,3 +1,4 @@
+function initRoomPage() {
 const roomId = window.location.pathname.split('/').filter(Boolean).pop();
 
 const authInfoEl = document.getElementById('authInfo');
@@ -1526,3 +1527,10 @@ async function checkAuth() {
     roomAppEl.classList.add('hidden');
   }
 })();
+}
+
+Vue.createApp({
+  mounted() {
+    initRoomPage();
+  },
+}).mount('#app');

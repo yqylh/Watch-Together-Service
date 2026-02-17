@@ -1,25 +1,10 @@
-const authStatusEl = document.getElementById('authStatus');
-const currentUserEl = document.getElementById('currentUser');
-const logoutBtn = document.getElementById('logoutBtn');
-
-const uploadForm = document.getElementById('uploadForm');
-const uploadStatus = document.getElementById('uploadStatus');
-const videoFileEl = document.getElementById('videoFile');
-const uploadModeHintEl = document.getElementById('uploadModeHint');
-const supportedFormatsEl = document.getElementById('supportedFormats');
-
 const {
   apiFetch,
-  setAuthToken,
   normalizeHash,
   computeFileSha256Hex,
 } = window.WatchPartyCommon;
 
-let currentUser = null;
-
-function setHintText() {
-  uploadModeHintEl.textContent = '仅本地模式：前端计算 SHA-256，服务端登记 hash 与可选封面，不上传视频源文件。';
-}
+const { mountAuthedPage } = window.WatchPartyVue;
 
 function loadVideoMetadata(file) {
   return new Promise((resolve, reject) => {
@@ -138,101 +123,83 @@ async function extractCoverBlob(file) {
   }
 }
 
-async function loadSupportedFormats() {
-  const data = await apiFetch('/api/supported-formats');
-  const formats = Array.isArray(data.formats) ? data.formats : [];
-  const lines = formats
-    .map((fmt) => `${fmt.extension}: ${fmt.mimeTypes.join(', ')}`)
-    .join('<br/>');
-  supportedFormatsEl.innerHTML = `${lines}<br/><br/>${data.note || ''}`;
-}
-
-uploadForm.addEventListener('submit', async (event) => {
-  event.preventDefault();
-  uploadStatus.textContent = '准备中...';
-
-  try {
-    const formData = new FormData(uploadForm);
-    const selectedFile = formData.get('video');
-    if (!(selectedFile instanceof File) || !selectedFile.name) {
-      throw new Error('请选择本地视频文件');
-    }
-
-    const contentHash = normalizeHash(await computeFileSha256Hex(selectedFile, {
-      onProgress: (loaded, total) => {
-        const pct = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
-        uploadStatus.textContent = `前端计算 SHA-256 中... ${pct}%`;
+mountAuthedPage({
+  data() {
+    return {
+      hintText: '仅本地模式：前端计算 SHA-256，服务端登记 hash 与可选封面，不上传视频源文件。',
+      supportedFormatsHtml: '',
+      uploadStatus: '',
+      form: {
+        title: '',
+        description: '',
       },
-    }));
-    if (!/^[a-f0-9]{64}$/.test(contentHash)) {
-      throw new Error('本地 hash 计算失败');
-    }
+    };
+  },
+  methods: {
+    async loadSupportedFormats() {
+      const data = await apiFetch('/api/supported-formats');
+      const formats = Array.isArray(data.formats) ? data.formats : [];
+      const lines = formats
+        .map((fmt) => `${fmt.extension}: ${fmt.mimeTypes.join(', ')}`)
+        .join('<br/>');
+      this.supportedFormatsHtml = `${lines}<br/><br/>${data.note || ''}`;
+    },
+    async submitUpload() {
+      this.uploadStatus = '准备中...';
+      try {
+        const input = this.$refs.videoFileInput;
+        const selectedFile = input && input.files ? input.files[0] : null;
+        if (!(selectedFile instanceof File) || !selectedFile.name) {
+          throw new Error('请选择本地视频文件');
+        }
 
-    uploadStatus.textContent = '抽取封面帧中...';
-    let coverBlob = null;
-    try {
-      coverBlob = await extractCoverBlob(selectedFile);
-    } catch (_err) {
-      coverBlob = null;
-    }
+        const contentHash = normalizeHash(await computeFileSha256Hex(selectedFile, {
+          onProgress: (loaded, total) => {
+            const pct = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
+            this.uploadStatus = `前端计算 SHA-256 中... ${pct}%`;
+          },
+        }));
+        if (!/^[a-f0-9]{64}$/.test(contentHash)) {
+          throw new Error('本地 hash 计算失败');
+        }
 
-    const payload = new FormData();
-    payload.set('title', String(formData.get('title') || ''));
-    payload.set('description', String(formData.get('description') || ''));
-    payload.set('contentHash', contentHash);
-    payload.set('localFileName', selectedFile.name || '');
-    payload.set('localFileSize', String(Number(selectedFile.size || 0)));
-    payload.set('localMimeType', String(selectedFile.type || ''));
-    if (coverBlob) {
-      payload.append('cover', coverBlob, `${contentHash.slice(0, 12)}.jpg`);
-    }
+        this.uploadStatus = '抽取封面帧中...';
+        let coverBlob = null;
+        try {
+          coverBlob = await extractCoverBlob(selectedFile);
+        } catch (_err) {
+          coverBlob = null;
+        }
 
-    uploadStatus.textContent = '提交登记到服务器...';
-    const result = await apiFetch('/api/videos', {
-      method: 'POST',
-      body: payload,
-    });
+        const payload = new FormData();
+        payload.set('title', this.form.title || '');
+        payload.set('description', this.form.description || '');
+        payload.set('contentHash', contentHash);
+        payload.set('localFileName', selectedFile.name || '');
+        payload.set('localFileSize', String(Number(selectedFile.size || 0)));
+        payload.set('localMimeType', String(selectedFile.type || ''));
+        if (coverBlob) {
+          payload.append('cover', coverBlob, `${contentHash.slice(0, 12)}.jpg`);
+        }
 
-    const reusedHint = result.reused ? '（复用已存在 hash）' : '';
-    uploadStatus.textContent = `登记成功${reusedHint}: ${result.video?.title || result.video?.id || '完成'}`;
-    uploadForm.reset();
-    setHintText();
-  } catch (err) {
-    uploadStatus.textContent = `登记失败: ${err.message}`;
-  }
+        this.uploadStatus = '提交登记到服务器...';
+        const result = await apiFetch('/api/videos', {
+          method: 'POST',
+          body: payload,
+        });
+        const reusedHint = result.reused ? '（复用已存在 hash）' : '';
+        this.uploadStatus = `登记成功${reusedHint}: ${result.video?.title || result.video?.id || '完成'}`;
+        this.form.title = '';
+        this.form.description = '';
+        if (input) {
+          input.value = '';
+        }
+      } catch (err) {
+        this.uploadStatus = `登记失败: ${err.message}`;
+      }
+    },
+  },
+  async onReady() {
+    await this.loadSupportedFormats();
+  },
 });
-
-logoutBtn.addEventListener('click', async () => {
-  try {
-    await apiFetch('/api/auth/logout', { method: 'POST' });
-  } catch (_err) {
-    // ignore
-  }
-  setAuthToken('');
-  window.location.href = '/';
-});
-
-async function checkAuth() {
-  try {
-    const result = await apiFetch('/api/auth/me');
-    currentUser = result.user;
-    currentUserEl.textContent = `${currentUser.username} (${currentUser.role})`;
-    authStatusEl.textContent = '登录状态有效';
-    return true;
-  } catch (_err) {
-    currentUser = null;
-    setAuthToken('');
-    authStatusEl.textContent = '请先登录，正在跳转...';
-    window.location.href = '/';
-    return false;
-  }
-}
-
-(async function init() {
-  setHintText();
-  const authed = await checkAuth();
-  if (!authed) {
-    return;
-  }
-  await loadSupportedFormats();
-})();

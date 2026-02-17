@@ -1122,6 +1122,18 @@ app.get('/videos', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'videos.html'));
 });
 
+app.get('/rooms', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'rooms.html'));
+});
+
+app.get('/playlists', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'playlists.html'));
+});
+
+app.get('/playlists/create', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'playlist-create.html'));
+});
+
 app.get('/upload', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'upload.html'));
 });

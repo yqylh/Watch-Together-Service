@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>所有放映室 - 一起看服务</title>
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body>
+    <div id="app" class="container page-shell" v-cloak>
+      <div class="header topbar site-topbar">
+        <div>
+          <p class="eyebrow">WATCH HUB</p>
+          <h1>所有放映室</h1>
+          <p class="small">{{ authStatus }}</p>
+        </div>
+        <div class="topbar-right">
+          <div class="nav topnav">
+            <a href="/upload">上传</a>
+            <a href="/videos">视频</a>
+            <a href="/rooms">放映室</a>
+            <a href="/playlists">视频列表</a>
+            <a href="/playlists/create">创建列表</a>
+            <a href="/admin">管理</a>
+          </div>
+          <div class="top-auth">
+            <div class="user-pill">{{ currentUser ? `${currentUser.username} (${currentUser.role})` : '未登录' }}</div>
+            <button class="secondary" type="button" @click="logout">退出</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-head">
+          <h2>放映室列表</h2>
+          <input v-model.trim="keyword" type="search" placeholder="搜索放映室 / 创建者 / 视频源" />
+        </div>
+        <div v-if="loading" class="small">加载中...</div>
+        <div v-else-if="!filteredRooms.length" class="small">没有匹配的放映室</div>
+        <div v-else class="card-grid room-grid">
+          <article v-for="room in filteredRooms" :key="room.id" class="room-card">
+            <a :href="`/rooms/${room.id}`" class="room-title">{{ room.name }}</a>
+            <div class="small">
+              {{ room.sourceLabel || '-' }} | 创建者: {{ room.creatorName || '-' }} | 在线: {{ room.memberCount || 0 }}
+            </div>
+            <div class="small">
+              续播: 第 {{ Number(room.latestEpisodeIndex || 0) + 1 }} 集 {{ formatSeconds(room.latestCurrentTime || 0) }}
+              | 累计: {{ formatSeconds(room.totalWatchedSeconds || 0) }}
+            </div>
+            <div class="small">创建时间: {{ formatDate(room.createdAt) }}</div>
+            <div v-if="canDeleteRoom(room)" class="flex">
+              <button class="danger" type="button" @click="deleteRoom(room)">删除</button>
+            </div>
+          </article>
+        </div>
+      </div>
+    </div>
+
+    <script src="/assets/common.js"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="/assets/vue-shared.js"></script>
+    <script src="/assets/rooms.js"></script>
+  </body>
+</html>

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>所有视频列表 - 一起看服务</title>
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body>
+    <div id="app" class="container page-shell" v-cloak>
+      <div class="header topbar site-topbar">
+        <div>
+          <p class="eyebrow">WATCH HUB</p>
+          <h1>所有视频列表</h1>
+          <p class="small">{{ authStatus }}</p>
+        </div>
+        <div class="topbar-right">
+          <div class="nav topnav">
+            <a href="/upload">上传</a>
+            <a href="/videos">视频</a>
+            <a href="/rooms">放映室</a>
+            <a href="/playlists">视频列表</a>
+            <a href="/playlists/create">创建列表</a>
+            <a href="/admin">管理</a>
+          </div>
+          <div class="top-auth">
+            <div class="user-pill">{{ currentUser ? `${currentUser.username} (${currentUser.role})` : '未登录' }}</div>
+            <button class="secondary" type="button" @click="logout">退出</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-head">
+          <h2>视频列表库</h2>
+          <input v-model.trim="keyword" type="search" placeholder="搜索列表名称 / 描述" />
+        </div>
+        <div v-if="loading" class="small">加载中...</div>
+        <div v-else-if="!filteredPlaylists.length" class="small">没有匹配的视频列表</div>
+        <div v-else class="card-grid media-grid">
+          <article v-for="playlist in filteredPlaylists" :key="playlist.id" class="media-card">
+            <h3>{{ playlist.name }} ({{ playlist.episodes.length }} 集)</h3>
+            <div class="small">{{ playlist.description || '无描述' }} | 创建时间: {{ formatDate(playlist.createdAt) }}</div>
+            <div class="mini-room-list">
+              <a
+                v-for="ep in playlist.episodes.slice(0, 6)"
+                :key="`${playlist.id}-${ep.episodeIndex}`"
+                :href="ep.watchUrl"
+                class="mini-room-chip"
+              >
+                E{{ ep.episodeIndex + 1 }} {{ ep.title }}
+              </a>
+              <div v-if="playlist.episodes.length > 6" class="small">还有 {{ playlist.episodes.length - 6 }} 集</div>
+            </div>
+            <form class="quick-room-form" @submit.prevent="createRoomFromPlaylist(playlist)">
+              <input v-model.trim="roomNameByPlaylist[playlist.id]" placeholder="放映室名称（可选）" />
+              <select v-model.number="startEpisodeByPlaylist[playlist.id]">
+                <option v-for="ep in playlist.episodes" :key="`${playlist.id}-start-${ep.episodeIndex}`" :value="ep.episodeIndex">
+                  第 {{ ep.episodeIndex + 1 }} 集
+                </option>
+              </select>
+              <button type="submit">创建放映室</button>
+            </form>
+            <div class="status">{{ roomStatusByPlaylist[playlist.id] || '' }}</div>
+            <div class="mini-room-list">
+              <template v-if="playlist.rooms.length">
+                <a v-for="room in playlist.rooms.slice(0, 4)" :key="room.id" :href="`/rooms/${room.id}`" class="mini-room-chip">
+                  {{ room.name }}
+                </a>
+                <div v-if="playlist.rooms.length > 4" class="small">还有 {{ playlist.rooms.length - 4 }} 个放映室</div>
+              </template>
+              <div v-else class="small">暂无放映室</div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </div>
+
+    <script src="/assets/common.js"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="/assets/vue-shared.js"></script>
+    <script src="/assets/playlists.js"></script>
+  </body>
+</html>

@@ -7,52 +7,102 @@
     <link rel="stylesheet" href="/assets/style.css" />
   </head>
   <body>
-    <div class="container page-shell">
+    <div id="app" class="container page-shell" v-cloak>
       <div class="header topbar site-topbar">
         <div>
           <h1>Root 管理台</h1>
-          <p class="small" id="authStatus">鉴权中...</p>
+          <p class="small">{{ authStatus }}</p>
         </div>
         <div class="topbar-right">
           <div class="nav topnav">
             <a href="/upload">上传</a>
-            <a href="/videos">视频中心</a>
+            <a href="/videos">视频</a>
+            <a href="/rooms">放映室</a>
+            <a href="/playlists">视频列表</a>
+            <a href="/playlists/create">创建列表</a>
           </div>
           <div class="top-auth">
-            <div class="user-pill" id="currentUser">未登录</div>
-            <button id="logoutBtn" type="button" class="secondary">退出</button>
+            <div class="user-pill">{{ currentUser ? `${currentUser.username} (${currentUser.role})` : '未登录' }}</div>
+            <button type="button" class="secondary" @click="logout">退出</button>
           </div>
         </div>
       </div>
 
-      <div id="adminContent" class="hidden">
+      <div v-if="accessDenied" class="card">
+        <div class="small">{{ accessDenied }}</div>
+      </div>
+
+      <div v-else-if="!loading">
         <div class="card" style="margin-top: 16px">
           <div class="section-head">
             <h2>所有视频（Root）</h2>
-            <input id="videoSearchInput" type="search" placeholder="搜索视频标题 / 文件名 / hash" />
+            <input v-model.trim="videoKeyword" type="search" placeholder="搜索视频标题 / 文件名 / hash" />
           </div>
-          <div id="videoList" class="card-grid media-grid"></div>
+          <div v-if="!filteredVideos.length" class="small">当前没有匹配的视频</div>
+          <div v-else class="card-grid media-grid">
+            <article v-for="video in filteredVideos" :key="video.id" class="media-card">
+              <h3><a :href="`/videos/${video.id}`">{{ video.title }}</a></h3>
+              <div class="small">
+                文件: {{ video.originalName || '-' }} | 大小: {{ formatBytes(video.size) }} | hash: {{ shortenHash(video.contentHash) }}
+                | 房间数: {{ Array.isArray(video.rooms) ? video.rooms.length : 0 }} | 创建时间: {{ formatDate(video.createdAt) }}
+              </div>
+              <div class="flex">
+                <button class="danger" type="button" @click="deleteVideo(video)">删除视频</button>
+              </div>
+            </article>
+          </div>
         </div>
 
         <div class="card" style="margin-top: 16px">
           <div class="section-head">
             <h2>所有视频列表（Root）</h2>
-            <input id="playlistSearchInput" type="search" placeholder="搜索列表名称 / 描述" />
+            <input v-model.trim="playlistKeyword" type="search" placeholder="搜索列表名称 / 描述" />
           </div>
-          <div id="playlistList" class="card-grid media-grid"></div>
+          <div v-if="!filteredPlaylists.length" class="small">当前没有匹配的视频列表</div>
+          <div v-else class="card-grid media-grid">
+            <article v-for="playlist in filteredPlaylists" :key="playlist.id" class="media-card">
+              <h3>{{ playlist.name }}</h3>
+              <div class="small">
+                集数: {{ Array.isArray(playlist.episodes) ? playlist.episodes.length : 0 }}
+                | 房间数: {{ Array.isArray(playlist.rooms) ? playlist.rooms.length : 0 }}
+                | 创建时间: {{ formatDate(playlist.createdAt) }}
+              </div>
+              <div class="flex">
+                <button class="danger" type="button" @click="deletePlaylist(playlist)">删除视频列表</button>
+              </div>
+            </article>
+          </div>
         </div>
 
         <div class="card" style="margin-top: 16px">
           <div class="section-head">
             <h2>所有放映室（Root）</h2>
-            <input id="roomSearchInput" type="search" placeholder="搜索放映室 / 创建者 / 视频列表" />
+            <input v-model.trim="roomKeyword" type="search" placeholder="搜索放映室 / 创建者 / 视频列表" />
           </div>
-          <div id="roomList" class="card-grid room-grid"></div>
+          <div v-if="!filteredRooms.length" class="small">当前没有匹配的放映室</div>
+          <div v-else class="card-grid room-grid">
+            <article v-for="room in filteredRooms" :key="room.id" class="room-card">
+              <a :href="`/rooms/${room.id}`" class="room-title">{{ room.name }}</a>
+              <div class="small">
+                {{ room.sourceLabel || `视频: ${room.videoTitle || '-'}` }} | 创建者: {{ room.creatorName || '-' }} | 在线: {{ room.memberCount || 0 }}
+              </div>
+              <div class="small">
+                续播: 第 {{ Number(room.latestEpisodeIndex || 0) + 1 }} 集 {{ formatSeconds(room.latestCurrentTime || 0) }}
+                | 累计观看: {{ formatSeconds(room.totalWatchedSeconds || 0) }}
+              </div>
+              <div class="small">创建时间: {{ formatDate(room.createdAt) }}</div>
+              <div class="flex">
+                <button class="danger" type="button" @click="deleteRoom(room)">删除放映室</button>
+              </div>
+            </article>
+          </div>
         </div>
       </div>
     </div>
 
     <script src="/assets/common.js"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="/assets/vue-shared.js"></script>
     <script src="/assets/admin.js"></script>
   </body>
 </html>

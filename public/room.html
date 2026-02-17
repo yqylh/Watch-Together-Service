@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/assets/style.css" />
   </head>
   <body>
-    <div class="container page-shell">
+    <div id="app" class="container page-shell">
       <div class="header topbar site-topbar">
         <div>
           <h1 id="roomTitle">放映室</h1>
@@ -16,7 +16,10 @@
         <div class="topbar-right">
           <div class="nav topnav">
             <a href="/upload">上传</a>
-            <a href="/videos">视频中心</a>
+            <a href="/videos">视频</a>
+            <a href="/rooms">放映室</a>
+            <a href="/playlists">视频列表</a>
+            <a href="/playlists/create">创建列表</a>
           </div>
           <div class="top-auth">
             <div class="user-pill" id="currentUser">未登录</div>
@@ -123,6 +126,8 @@
 
     <script src="/assets/common.js"></script>
     <script src="/socket.io/socket.io.js"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="/assets/vue-shared.js"></script>
     <script src="/assets/room.js"></script>
   </body>
 </html>

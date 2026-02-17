@@ -7,22 +7,25 @@
     <link rel="stylesheet" href="/assets/style.css" />
   </head>
   <body>
-    <div class="container page-shell">
+    <div id="app" class="container page-shell" v-cloak>
       <div class="header topbar site-topbar">
         <div>
           <p class="eyebrow">UPLOAD CENTER</p>
           <h1>上传视频</h1>
-          <p class="small" id="authStatus">鉴权中...</p>
+          <p class="small">{{ authStatus }}</p>
         </div>
         <div class="topbar-right">
           <div class="nav topnav">
             <a href="/upload">上传</a>
-            <a href="/videos">视频中心</a>
+            <a href="/videos">视频</a>
+            <a href="/rooms">放映室</a>
+            <a href="/playlists">视频列表</a>
+            <a href="/playlists/create">创建列表</a>
             <a href="/admin">管理</a>
           </div>
           <div class="top-auth">
-            <div class="user-pill" id="currentUser">未登录</div>
-            <button id="logoutBtn" class="secondary" type="button">退出</button>
+            <div class="user-pill">{{ currentUser ? `${currentUser.username} (${currentUser.role})` : '未登录' }}</div>
+            <button class="secondary" type="button" @click="logout">退出</button>
           </div>
         </div>
       </div>
@@ -30,22 +33,22 @@
       <div class="grid two-col">
         <div class="card">
           <h2>登记视频（本地模式）</h2>
-          <form id="uploadForm">
+          <form @submit.prevent="submitUpload">
             <div class="form-row">
               <label for="title">标题</label>
-              <input id="title" name="title" placeholder="可选" />
+              <input id="title" v-model.trim="form.title" placeholder="可选" />
             </div>
             <div class="form-row">
               <label for="description">描述</label>
-              <textarea id="description" name="description" placeholder="可选"></textarea>
+              <textarea id="description" v-model.trim="form.description" placeholder="可选"></textarea>
             </div>
             <div class="form-row">
-              <label for="videoFile" id="videoFileLabel">本地视频文件</label>
-              <input id="videoFile" name="video" type="file" accept="video/*" required />
-              <div id="uploadModeHint" class="small"></div>
+              <label for="videoFile">本地视频文件</label>
+              <input id="videoFile" ref="videoFileInput" type="file" accept="video/*" required />
+              <div class="small">{{ hintText }}</div>
             </div>
             <button type="submit">提交登记</button>
-            <div class="status" id="uploadStatus"></div>
+            <div class="status">{{ uploadStatus }}</div>
           </form>
         </div>
 
@@ -56,13 +59,15 @@
               仅支持本地模式：服务端不会保存视频源文件，只保存元数据（hash、文件名、大小、可选封面）。
             </div>
             <h3>支持格式</h3>
-            <div id="supportedFormats" class="small"></div>
+            <div class="small" v-html="supportedFormatsHtml"></div>
           </div>
         </div>
       </div>
     </div>
 
     <script src="/assets/common.js"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="/assets/vue-shared.js"></script>
     <script src="/assets/upload.js"></script>
   </body>
 </html>
