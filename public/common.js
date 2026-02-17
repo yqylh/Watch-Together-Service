@@ -217,7 +217,12 @@
 
     while (offset < total) {
       const end = Math.min(total, offset + chunkSize);
-      const chunkBuffer = await file.slice(offset, end).arrayBuffer();
+      let chunkBuffer;
+      try {
+        chunkBuffer = await file.slice(offset, end).arrayBuffer();
+      } catch (err) {
+        throw new Error(`读取文件失败（${offset}-${end} 字节）：${err?.message || '未知错误'}`);
+      }
       ctx.update(new Uint8Array(chunkBuffer));
       offset = end;
       if (onProgress) {

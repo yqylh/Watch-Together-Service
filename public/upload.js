@@ -4,160 +4,201 @@ const logoutBtn = document.getElementById('logoutBtn');
 
 const uploadForm = document.getElementById('uploadForm');
 const uploadStatus = document.getElementById('uploadStatus');
-const uploadModeEl = document.getElementById('uploadMode');
 const videoFileEl = document.getElementById('videoFile');
-const videoFileLabelEl = document.getElementById('videoFileLabel');
 const uploadModeHintEl = document.getElementById('uploadModeHint');
-
-const storageInfoEl = document.getElementById('storageInfo');
 const supportedFormatsEl = document.getElementById('supportedFormats');
 
 const {
   apiFetch,
   setAuthToken,
-  formatBytes,
   normalizeHash,
   computeFileSha256Hex,
 } = window.WatchPartyCommon;
 
 let currentUser = null;
 
-function mapJobStage(stage) {
-  const dict = {
-    upload_received: '上传完成，等待处理',
-    hashing: '校验 hash',
-    registering_local_hash: '登记本地模式 hash',
-    compressing: '压缩转码',
-    deduplicating: '重复文件复用',
-    storing_local: '写入播放池',
-    uploading_oss: '后台传输到 OSS',
-    completed: '已完成',
-    failed: '失败',
-  };
-  return dict[stage] || stage || '处理中';
+function setHintText() {
+  uploadModeHintEl.textContent = '仅本地模式：前端计算 SHA-256，服务端登记 hash 与可选封面，不上传视频源文件。';
 }
 
-function mapJobStatus(status) {
-  if (status === 'completed') {
-    return '完成';
-  }
-  if (status === 'failed') {
-    return '失败';
-  }
-  return '处理中';
+function loadVideoMetadata(file) {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video');
+    const objectUrl = URL.createObjectURL(file);
+    let settled = false;
+
+    const cleanup = () => {
+      video.removeAttribute('src');
+      video.load();
+      URL.revokeObjectURL(objectUrl);
+    };
+
+    video.preload = 'metadata';
+    video.muted = true;
+    video.playsInline = true;
+
+    video.onloadedmetadata = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve({ video, cleanup });
+    };
+
+    video.onerror = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      reject(new Error('无法读取视频元数据'));
+    };
+
+    video.src = objectUrl;
+  });
 }
 
-function syncUploadModeUI() {
-  const mode = String(uploadModeEl.value || 'cloud').trim();
-  const isLocalMode = mode === 'local_file';
+function seekVideo(video, timeSec) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) {
+        return;
+      }
+      done = true;
+      reject(new Error('视频寻帧超时'));
+    }, 15000);
 
-  videoFileEl.required = true;
-  if (isLocalMode) {
-    videoFileLabelEl.textContent = '本地文件（仅用于计算 hash）';
-    uploadModeHintEl.textContent = '本地模式不会上传文件本体，前端会计算 SHA-256 后仅提交 hash。';
-    return;
-  }
+    const onSeeked = () => {
+      if (done) {
+        return;
+      }
+      done = true;
+      clearTimeout(timer);
+      video.removeEventListener('seeked', onSeeked);
+      video.removeEventListener('error', onError);
+      resolve();
+    };
 
-  videoFileLabelEl.textContent = '视频文件';
-  uploadModeHintEl.textContent = '';
+    const onError = () => {
+      if (done) {
+        return;
+      }
+      done = true;
+      clearTimeout(timer);
+      video.removeEventListener('seeked', onSeeked);
+      video.removeEventListener('error', onError);
+      reject(new Error('视频寻帧失败'));
+    };
+
+    video.addEventListener('seeked', onSeeked);
+    video.addEventListener('error', onError);
+    video.currentTime = Math.max(0, Number(timeSec || 0));
+  });
 }
 
-async function pollVideoJob(jobId, onUpdate) {
-  for (let attempt = 0; attempt < 600; attempt += 1) {
-    const data = await apiFetch(`/api/video-jobs/${jobId}`);
-    const job = data.job;
-    onUpdate(job);
-    if (job.status === 'completed') {
-      return job;
+function canvasToJpegBlob(canvas, quality = 0.88) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error('封面导出失败'));
+        return;
+      }
+      resolve(blob);
+    }, 'image/jpeg', quality);
+  });
+}
+
+async function extractCoverBlob(file) {
+  const { video, cleanup } = await loadVideoMetadata(file);
+  try {
+    const duration = Number(video.duration || 0);
+    const target = Number.isFinite(duration) && duration > 0
+      ? duration * (0.35 + Math.random() * 0.3)
+      : 0;
+    await seekVideo(video, target);
+
+    const rawWidth = Math.max(1, Number(video.videoWidth || 0));
+    const rawHeight = Math.max(1, Number(video.videoHeight || 0));
+    const maxWidth = 960;
+    const width = rawWidth > maxWidth ? maxWidth : rawWidth;
+    const height = Math.max(1, Math.round((rawHeight * width) / rawWidth));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('浏览器不支持 Canvas 2D');
     }
-    if (job.status === 'failed') {
-      throw new Error(job.error || job.message || '任务失败');
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    ctx.drawImage(video, 0, 0, width, height);
+    return await canvasToJpegBlob(canvas);
+  } finally {
+    cleanup();
   }
-  throw new Error('任务超时，请稍后查看状态');
 }
 
 async function loadSupportedFormats() {
   const data = await apiFetch('/api/supported-formats');
-  const lines = data.formats
+  const formats = Array.isArray(data.formats) ? data.formats : [];
+  const lines = formats
     .map((fmt) => `${fmt.extension}: ${fmt.mimeTypes.join(', ')}`)
     .join('<br/>');
   supportedFormatsEl.innerHTML = `${lines}<br/><br/>${data.note || ''}`;
 }
 
-async function loadStorageInfo() {
-  const data = await apiFetch('/api/storage');
-  const pool = data.pool || {};
-  const disk = data.disk || null;
-  const lines = [];
-  const poolLimitLabel = pool.isUnlimited ? '无上限' : formatBytes(pool.maxBytes);
-  const poolAvailableLabel = pool.isUnlimited ? '不限制' : formatBytes(pool.availableBytes);
-  lines.push(`播放池: 已用 ${formatBytes(pool.usageBytes)} / 上限 ${poolLimitLabel} (可用 ${poolAvailableLabel})`);
-  lines.push(`池中文件数: ${Number(pool.fileCount || 0)}`);
-  if (disk) {
-    lines.push(`所在磁盘: 剩余 ${formatBytes(disk.freeBytes)} / 总计 ${formatBytes(disk.totalBytes)}`);
-  } else {
-    lines.push('所在磁盘: 当前环境不支持读取');
-  }
-
-  storageInfoEl.innerHTML = lines.join('<br/>');
-}
-
-uploadModeEl.addEventListener('change', syncUploadModeUI);
-
 uploadForm.addEventListener('submit', async (event) => {
   event.preventDefault();
-  uploadStatus.textContent = '上传中（浏览器 -> 服务器）...';
+  uploadStatus.textContent = '准备中...';
 
   try {
     const formData = new FormData(uploadForm);
-    const uploadMode = String(formData.get('uploadMode') || 'cloud').trim();
-    if (!['cloud', 'local_file'].includes(uploadMode)) {
-      throw new Error('上传模式无效');
-    }
-
     const selectedFile = formData.get('video');
     if (!(selectedFile instanceof File) || !selectedFile.name) {
       throw new Error('请选择本地视频文件');
     }
 
-    if (uploadMode === 'local_file') {
-      const contentHash = normalizeHash(await computeFileSha256Hex(selectedFile, {
-        onProgress: (loaded, total) => {
-          const pct = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
-          uploadStatus.textContent = `本地模式：正在前端计算 SHA-256... ${pct}%`;
-        },
-      }));
-      if (!/^[a-f0-9]{64}$/.test(contentHash)) {
-        throw new Error('本地模式 hash 计算失败');
-      }
-      formData.set('contentHash', contentHash);
-      formData.set('localFileName', selectedFile.name || '');
-      formData.delete('video');
+    const contentHash = normalizeHash(await computeFileSha256Hex(selectedFile, {
+      onProgress: (loaded, total) => {
+        const pct = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
+        uploadStatus.textContent = `前端计算 SHA-256 中... ${pct}%`;
+      },
+    }));
+    if (!/^[a-f0-9]{64}$/.test(contentHash)) {
+      throw new Error('本地 hash 计算失败');
     }
 
-    const submitResult = await apiFetch('/api/videos', {
+    uploadStatus.textContent = '抽取封面帧中...';
+    let coverBlob = null;
+    try {
+      coverBlob = await extractCoverBlob(selectedFile);
+    } catch (_err) {
+      coverBlob = null;
+    }
+
+    const payload = new FormData();
+    payload.set('title', String(formData.get('title') || ''));
+    payload.set('description', String(formData.get('description') || ''));
+    payload.set('contentHash', contentHash);
+    payload.set('localFileName', selectedFile.name || '');
+    payload.set('localFileSize', String(Number(selectedFile.size || 0)));
+    payload.set('localMimeType', String(selectedFile.type || ''));
+    if (coverBlob) {
+      payload.append('cover', coverBlob, `${contentHash.slice(0, 12)}.jpg`);
+    }
+
+    uploadStatus.textContent = '提交登记到服务器...';
+    const result = await apiFetch('/api/videos', {
       method: 'POST',
-      body: formData,
+      body: payload,
     });
 
-    const jobId = submitResult.job?.id;
-    if (!jobId) {
-      throw new Error('上传任务创建失败');
-    }
-
-    const doneJob = await pollVideoJob(jobId, (job) => {
-      const pct = Math.max(0, Math.min(100, Math.round(Number(job.progress || 0) * 100)));
-      uploadStatus.textContent = `状态: ${mapJobStatus(job.status)} | 阶段: ${mapJobStage(job.stage)} | ${pct}% | ${job.message || ''}`;
-    });
-
-    uploadStatus.textContent = `上传成功: ${doneJob.video?.title || doneJob.videoId || '已入库'}`;
+    const reusedHint = result.reused ? '（复用已存在 hash）' : '';
+    uploadStatus.textContent = `登记成功${reusedHint}: ${result.video?.title || result.video?.id || '完成'}`;
     uploadForm.reset();
-    syncUploadModeUI();
-    await loadStorageInfo();
+    setHintText();
   } catch (err) {
-    uploadStatus.textContent = `上传失败: ${err.message}`;
+    uploadStatus.textContent = `登记失败: ${err.message}`;
   }
 });
 
@@ -188,10 +229,10 @@ async function checkAuth() {
 }
 
 (async function init() {
-  syncUploadModeUI();
+  setHintText();
   const authed = await checkAuth();
   if (!authed) {
     return;
   }
-  await Promise.all([loadStorageInfo(), loadSupportedFormats()]);
+  await loadSupportedFormats();
 })();

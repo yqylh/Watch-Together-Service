@@ -15,25 +15,32 @@ const {
   setAuthToken,
   formatDate,
   formatSeconds,
+  formatBytes,
 } = window.WatchPartyCommon;
 
 let currentUser = null;
 let videosCache = [];
-
-function modeOptionsHtml(options = {}) {
-  const allowCloud = options.allowCloud !== false;
-  return `
-    <option value="">请选择播放模式</option>
-    ${allowCloud ? '<option value="cloud">云端托管</option>' : ''}
-    <option value="local_file">本地文件</option>
-  `;
-}
 
 function canDeleteRoom(room) {
   if (!currentUser) {
     return false;
   }
   return currentUser.role === 'root' || room.createdByUserId === currentUser.id;
+}
+
+function buildVideoCoverNode(video) {
+  if (video.coverUrl) {
+    const img = document.createElement('img');
+    img.src = video.coverUrl;
+    img.alt = `${video.title} cover`;
+    img.className = 'cover-image';
+    return img;
+  }
+
+  const empty = document.createElement('div');
+  empty.className = 'cover-empty';
+  empty.textContent = '无封面';
+  return empty;
 }
 
 function renderRoomRow(room) {
@@ -46,7 +53,7 @@ function renderRoomRow(room) {
 
   const info = document.createElement('div');
   info.className = 'small';
-  info.textContent = `${room.sourceLabel || ''} | 模式: ${room.roomMode || 'cloud'} | 创建者: ${room.creatorName || '-'} | 在线: ${room.memberCount || 0} | 续播: 第 ${Number(room.latestEpisodeIndex || 0) + 1} 集 ${formatSeconds(room.latestCurrentTime || 0)} | 累计观看: ${formatSeconds(room.totalWatchedSeconds || 0)}`;
+  info.textContent = `${room.sourceLabel || ''} | 创建者: ${room.creatorName || '-'} | 在线: ${room.memberCount || 0} | 续播: 第 ${Number(room.latestEpisodeIndex || 0) + 1} 集 ${formatSeconds(room.latestCurrentTime || 0)} | 累计观看: ${formatSeconds(room.totalWatchedSeconds || 0)}`;
 
   const meta = document.createElement('div');
   meta.className = 'small';
@@ -86,17 +93,9 @@ function renderVideoCard(video) {
   const title = document.createElement('h3');
   title.textContent = video.title;
 
-  if (video.mediaUrl) {
-    const player = document.createElement('video');
-    player.src = video.mediaUrl;
-    player.controls = true;
-    item.appendChild(player);
-  } else {
-    const tip = document.createElement('div');
-    tip.className = 'small';
-    tip.textContent = '本地模式视频：服务端不存源文件，无法云端预览。';
-    item.appendChild(tip);
-  }
+  const coverWrap = document.createElement('div');
+  coverWrap.className = 'cover-wrap';
+  coverWrap.appendChild(buildVideoCoverNode(video));
 
   const uniqueLink = document.createElement('a');
   uniqueLink.href = video.watchUrl;
@@ -104,7 +103,7 @@ function renderVideoCard(video) {
 
   const meta = document.createElement('div');
   meta.className = 'small';
-  meta.textContent = `上传时间: ${formatDate(video.createdAt)} | 文件: ${video.originalName} | hash: ${video.contentHash || '-'} | 来源: ${video.sourceType} | 本地: ${video.localAvailable ? '有' : '无'} | OSS: ${video.storedInOss ? '有' : '无'}`;
+  meta.textContent = `上传时间: ${formatDate(video.createdAt)} | 文件: ${video.originalName} | 大小: ${formatBytes(video.size)} | hash: ${video.contentHash || '-'} | 形式: 本地模式（hash）`;
 
   const roomForm = document.createElement('form');
   roomForm.className = 'card';
@@ -113,34 +112,20 @@ function renderVideoCard(video) {
       <label>放映室名称</label>
       <input name="roomName" placeholder="可选" />
     </div>
-    <div class="form-row">
-      <label>播放模式</label>
-      <select name="roomMode" required>
-        ${modeOptionsHtml({ allowCloud: Boolean(video.mediaUrl) })}
-      </select>
-    </div>
     <button type="submit">基于此视频创建放映室</button>
   `;
 
   roomForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     const formData = new FormData(roomForm);
-    const roomMode = String(formData.get('roomMode') || '').trim();
-    if (!roomMode) {
-      alert('请选择播放模式');
-      return;
-    }
-
     try {
       const result = await apiFetch(`/api/videos/${video.id}/rooms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           roomName: formData.get('roomName') || '',
-          roomMode,
         }),
       });
-
       window.location.href = `/rooms/${result.room.id}`;
     } catch (err) {
       alert(err.message);
@@ -155,7 +140,8 @@ function renderVideoCard(video) {
     video.rooms.forEach((room) => roomsWrap.appendChild(renderRoomRow(room)));
   }
 
-  item.prepend(title);
+  item.appendChild(title);
+  item.appendChild(coverWrap);
   item.appendChild(uniqueLink);
   item.appendChild(meta);
   item.appendChild(roomForm);
@@ -179,7 +165,7 @@ function renderPlaylistCard(playlist) {
   playlist.episodes.forEach((ep) => {
     const row = document.createElement('div');
     row.className = 'room-item';
-    row.innerHTML = `<div>第 ${ep.episodeIndex + 1} 集: <a href="${ep.watchUrl}">${ep.title}</a></div><div class="small">hash: ${ep.contentHash || '-'} | 来源: ${ep.sourceType || '-'}</div>`;
+    row.innerHTML = `<div>第 ${ep.episodeIndex + 1} 集: <a href="${ep.watchUrl}">${ep.title}</a></div><div class="small">形式: 本地模式（hash） | hash: ${ep.contentHash || '-'} | ${formatBytes(ep.size)}</div>`;
     epWrap.appendChild(row);
   });
 
@@ -189,18 +175,10 @@ function renderPlaylistCard(playlist) {
     .map((ep) => `<option value="${ep.episodeIndex}">第 ${ep.episodeIndex + 1} 集 - ${ep.title}</option>`)
     .join('');
 
-  const allowCloudMode = playlist.episodes.every((ep) => Boolean(ep.mediaUrl));
-
   roomForm.innerHTML = `
     <div class="form-row">
       <label>放映室名称</label>
       <input name="roomName" placeholder="可选" />
-    </div>
-    <div class="form-row">
-      <label>播放模式</label>
-      <select name="roomMode" required>
-        ${modeOptionsHtml({ allowCloud: allowCloudMode })}
-      </select>
     </div>
     <div class="form-row">
       <label>起播集数</label>
@@ -212,23 +190,15 @@ function renderPlaylistCard(playlist) {
   roomForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     const formData = new FormData(roomForm);
-    const roomMode = String(formData.get('roomMode') || '').trim();
-    if (!roomMode) {
-      alert('请选择播放模式');
-      return;
-    }
-
     try {
       const result = await apiFetch(`/api/playlists/${playlist.id}/rooms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           roomName: formData.get('roomName') || '',
-          roomMode,
           startEpisodeIndex: Number(formData.get('startEpisodeIndex') || 0),
         }),
       });
-
       window.location.href = `/rooms/${result.room.id}`;
     } catch (err) {
       alert(err.message);
@@ -248,7 +218,6 @@ function renderPlaylistCard(playlist) {
   item.appendChild(epWrap);
   item.appendChild(roomForm);
   item.appendChild(roomList);
-
   return item;
 }
 
@@ -269,7 +238,7 @@ async function loadVideos() {
 
   videoListEl.innerHTML = '';
   if (!videosCache.length) {
-    videoListEl.innerHTML = '<div class="small">还没有上传任何视频</div>';
+    videoListEl.innerHTML = '<div class="small">还没有登记任何视频</div>';
     return;
   }
 
@@ -359,6 +328,5 @@ async function checkAuth() {
   if (!authed) {
     return;
   }
-
   await Promise.all([loadVideos(), loadPlaylists(), loadGlobalRooms()]);
 })();

@@ -31,15 +31,8 @@
 
       <div class="grid two-col">
         <div class="card">
-          <h2>上传任务</h2>
+          <h2>登记视频（本地模式）</h2>
           <form id="uploadForm">
-            <div class="form-row">
-              <label for="uploadMode">上传模式</label>
-              <select id="uploadMode" name="uploadMode" required>
-                <option value="cloud" selected>云端托管（上传文件）</option>
-                <option value="local_file">本地模式（前端计算 hash）</option>
-              </select>
-            </div>
             <div class="form-row">
               <label for="title">标题</label>
               <input id="title" name="title" placeholder="可选" />
@@ -49,22 +42,22 @@
               <textarea id="description" name="description" placeholder="可选"></textarea>
             </div>
             <div class="form-row">
-              <label for="videoFile" id="videoFileLabel">视频文件</label>
+              <label for="videoFile" id="videoFileLabel">本地视频文件</label>
               <input id="videoFile" name="video" type="file" accept="video/*" required />
               <div id="uploadModeHint" class="small"></div>
             </div>
-            <button type="submit">提交上传</button>
+            <button type="submit">提交登记</button>
             <div class="status" id="uploadStatus"></div>
           </form>
         </div>
 
         <div>
-          <div class="card" style="margin-bottom: 16px">
-            <h2>存储状态</h2>
-            <div id="storageInfo" class="small"></div>
-          </div>
           <div class="card">
-            <h2>支持格式</h2>
+            <h2>上传说明</h2>
+            <div class="small" style="margin-bottom: 8px">
+              仅支持本地模式：服务端不会保存视频源文件，只保存元数据（hash、文件名、大小、可选封面）。
+            </div>
+            <h3>支持格式</h3>
             <div id="supportedFormats" class="small"></div>
           </div>
         </div>

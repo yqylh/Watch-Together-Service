@@ -38,6 +38,12 @@ const chatFormEl = document.getElementById('chatForm');
 const chatInputEl = document.getElementById('chatInput');
 
 const AUTH_TOKEN_KEY = 'auth_token';
+const HEARTBEAT_MS = 4000;
+const SUPPRESS_MS = 900;
+const RESYNC_COOLDOWN_MS = 1500;
+const RESYNC_THRESHOLD_PLAY_PAUSE_SEC = 0.7;
+const RESYNC_THRESHOLD_SEEK_SEC = 0.4;
+const RESYNC_THRESHOLD_HEARTBEAT_SEC = 0.9;
 
 let socket = null;
 const peers = new Map();
@@ -67,12 +73,13 @@ let autoNextTargetEpisode = null;
 let driftSoftThresholdSec = 0.2;
 let driftHardThresholdSec = 1.2;
 let autoplayCountdownDefaultSec = 8;
-let roomMode = 'cloud';
 let localFileRequirement = null;
 let playbackLocked = false;
 let localVerifyInFlightKey = '';
 let localObjectUrl = '';
 let localObjectHash = '';
+let lastDriftCorrectionAt = 0;
+let lastHeartbeatSentAt = 0;
 
 function getAuthToken() {
   return localStorage.getItem(AUTH_TOKEN_KEY) || '';
@@ -114,7 +121,7 @@ function mapSourceTypeLabel(sourceType) {
   if (sourceType === 'local_hash') {
     return '本地文件模式（仅 hash）';
   }
-  return '云端托管文件';
+  return '本地文件模式';
 }
 
 function updatePlaybackFormInfo() {
@@ -124,7 +131,7 @@ function updatePlaybackFormInfo() {
     return;
   }
   const sourceLabel = mapSourceTypeLabel(episode.sourceType);
-  const playingFrom = episode.mediaUrl ? '云端媒体流' : '本地文件';
+  const playingFrom = '本地文件';
   playbackFormInfoEl.textContent = `当前视频形式: ${sourceLabel} | 当前播放来源: ${playingFrom}`;
 }
 
@@ -132,11 +139,29 @@ function setLocalFileStatus(text) {
   localFileStatusEl.textContent = text || '';
 }
 
-function setPlaybackSuppressed(durationMs = 280) {
+function setPlaybackSuppressed(durationMs = SUPPRESS_MS) {
   playbackSuppressed = true;
   setTimeout(() => {
     playbackSuppressed = false;
   }, durationMs);
+}
+
+function getRemoteParticipantCount() {
+  if (!participants.size) {
+    return 0;
+  }
+  const selfId = socket?.id || '';
+  let remoteCount = 0;
+  for (const participantId of participants.keys()) {
+    if (!selfId || participantId !== selfId) {
+      remoteCount += 1;
+    }
+  }
+  return remoteCount;
+}
+
+function hasRemoteParticipants() {
+  return getRemoteParticipantCount() > 0;
 }
 
 function clearLocalObjectUrl() {
@@ -380,6 +405,8 @@ function emitPlayback(action, overrides = {}, force = false) {
     payload.countdownToEpisode = Number(overrides.countdownToEpisode);
   }
 
+  // 保持本地权威态跟随最新操作，避免单人场景被旧状态拉回。
+  setAuthoritativeState(payload);
   socket.emit('playback-update', payload);
 }
 
@@ -543,6 +570,9 @@ function correctPlaybackDrift(options = {}) {
   if (!joined || !authoritativeState || playbackLocked) {
     return;
   }
+  if (!hasRemoteParticipants() && !options.forceSeek) {
+    return;
+  }
 
   const action = options.action || '';
   const targetTime = getAuthoritativeTargetTime();
@@ -554,8 +584,28 @@ function correctPlaybackDrift(options = {}) {
   const drift = targetTime - current;
   const absDrift = Math.abs(drift);
   const roomRate = Number(authoritativeState.playbackRate || 1);
+  const now = Date.now();
+  const isHeartbeatLike = action === 'timeupdate' || action === 'drift-tick';
+  const baseThreshold = action === 'seek' || action === 'episode-switch'
+    ? Math.max(RESYNC_THRESHOLD_SEEK_SEC, driftSoftThresholdSec)
+    : action === 'play' || action === 'pause'
+      ? Math.max(RESYNC_THRESHOLD_PLAY_PAUSE_SEC, driftSoftThresholdSec)
+      : Math.max(RESYNC_THRESHOLD_HEARTBEAT_SEC, driftSoftThresholdSec);
+  const threshold = options.forceSeek ? 0 : baseThreshold;
 
-  if (absDrift >= driftHardThresholdSec || options.forceSeek) {
+  if (!options.forceSeek && isHeartbeatLike && drift < 0) {
+    // 心跳只向前追，不回退，避免来回拉扯。
+    return;
+  }
+  if (!options.forceSeek && absDrift <= threshold) {
+    return;
+  }
+  if (!options.forceSeek && now - lastDriftCorrectionAt < RESYNC_COOLDOWN_MS) {
+    return;
+  }
+
+  if (absDrift >= Math.max(driftHardThresholdSec, threshold + 0.25) || options.forceSeek) {
+    lastDriftCorrectionAt = now;
     clearMicroAdjustTimer();
     setPlaybackSuppressed(260);
     watchVideoEl.currentTime = Math.max(0, targetTime);
@@ -564,13 +614,14 @@ function correctPlaybackDrift(options = {}) {
     return;
   }
 
-  if (authoritativeState.isPlaying && absDrift > driftSoftThresholdSec) {
+  if (authoritativeState.isPlaying && absDrift > Math.max(driftSoftThresholdSec, threshold)) {
     if (microAdjustTimer) {
       return;
     }
+    lastDriftCorrectionAt = now;
     const adjustedRate = drift > 0
-      ? Math.min(4, roomRate * 1.08)
-      : Math.max(0.25, roomRate * 0.92);
+      ? Math.min(4, roomRate * 1.06)
+      : Math.max(0.25, roomRate * 0.94);
 
     setPlaybackSuppressed(260);
     watchVideoEl.playbackRate = adjustedRate;
@@ -581,7 +632,8 @@ function correctPlaybackDrift(options = {}) {
     return;
   }
 
-  if (!authoritativeState.isPlaying && absDrift > driftSoftThresholdSec) {
+  if (!authoritativeState.isPlaying && absDrift > Math.max(driftSoftThresholdSec, threshold)) {
+    lastDriftCorrectionAt = now;
     clearMicroAdjustTimer();
     setPlaybackSuppressed(220);
     watchVideoEl.currentTime = Math.max(0, targetTime);
@@ -658,12 +710,6 @@ function getCurrentRequirement() {
 }
 
 function renderLocalFileGate() {
-  if (roomMode !== 'local_file') {
-    localFileGateEl.classList.add('hidden');
-    setPlaybackLocked(false);
-    return;
-  }
-
   localFileGateEl.classList.remove('hidden');
   const requirement = getCurrentRequirement();
 
@@ -739,25 +785,17 @@ async function setEpisode(index, options = {}) {
     return;
   }
 
-  if (episode.mediaUrl) {
-    const absolute = new URL(episode.mediaUrl, window.location.origin).href;
-    if (changed || watchVideoEl.currentSrc !== absolute) {
-      setWatchVideoSource(episode.mediaUrl, false);
+  const hash = normalizeHash(episode.contentHash || '');
+  const localFile = hash ? localFileMapByHash.get(hash) : null;
+  if (localFile) {
+    const currentSrc = watchVideoEl.getAttribute('src') || '';
+    const canReuseCurrent = Boolean(currentSrc) && localObjectHash === hash;
+    if (!canReuseCurrent) {
+      setWatchVideoSource(URL.createObjectURL(localFile), true, hash);
       await waitForMetadata(watchVideoEl);
     }
   } else {
-    const hash = normalizeHash(episode.contentHash || '');
-    const localFile = hash ? localFileMapByHash.get(hash) : null;
-    if (localFile) {
-      const currentSrc = watchVideoEl.getAttribute('src') || '';
-      const canReuseCurrent = Boolean(currentSrc) && localObjectHash === hash;
-      if (!canReuseCurrent) {
-        setWatchVideoSource(URL.createObjectURL(localFile), true, hash);
-        await waitForMetadata(watchVideoEl);
-      }
-    } else {
-      setWatchVideoSource('', false);
-    }
+    setWatchVideoSource('', false);
   }
 
   if (Number.isFinite(Number(options.resumeTime))) {
@@ -861,6 +899,9 @@ function maybeCorrectPlaybackDrift() {
   if (!joined || playbackSuppressed || !authoritativeState || playbackLocked) {
     return;
   }
+  if (!hasRemoteParticipants()) {
+    return;
+  }
   if (!watchVideoEl.paused || authoritativeState.isPlaying) {
     correctPlaybackDrift({ action: 'drift-tick' });
   }
@@ -901,9 +942,6 @@ function verifyRequirementThroughSocket(requirement) {
 }
 
 function tryAutoVerifyCurrentRequirement() {
-  if (roomMode !== 'local_file') {
-    return;
-  }
   const requirement = getCurrentRequirement();
   if (!requirement || !requirement.contentHash) {
     return;
@@ -926,11 +964,6 @@ async function computeFileSha256Hex(file, options = {}) {
 }
 
 async function verifySelectedLocalFile() {
-  if (roomMode !== 'local_file') {
-    setLocalFileStatus('当前房间不是本地文件模式');
-    return;
-  }
-
   if (!joined || !socket) {
     setLocalFileStatus('请先加入房间');
     return;
@@ -992,6 +1025,8 @@ async function joinRoom() {
     }
 
     joined = true;
+    lastHeartbeatSentAt = 0;
+    lastDriftCorrectionAt = 0;
     setStatus('已加入放映室');
 
     if (currentUser?.username && socket.id) {
@@ -1010,6 +1045,8 @@ function leaveRoom() {
   }
   joined = false;
   initialPlaybackAligned = false;
+  lastHeartbeatSentAt = 0;
+  lastDriftCorrectionAt = 0;
   setAuthoritativeState(null);
   cancelAutoNextCountdown(false);
   clearMicroAdjustTimer();
@@ -1041,7 +1078,6 @@ function canDeleteRoom() {
 async function initRoomInfo() {
   const result = await apiFetch(`/api/rooms/${roomId}`);
   roomData = result;
-  roomMode = result.room?.roomMode || 'cloud';
   localFileRequirement = normalizeRequirement(result.localFileRequirement);
 
   const syncConfig = result.syncConfig || {};
@@ -1359,7 +1395,11 @@ setInterval(() => {
   maybeCorrectPlaybackDrift();
 
   if (!playbackSuppressed && !playbackLocked && !watchVideoEl.paused) {
-    emitPlayback('timeupdate');
+    const now = Date.now();
+    if (now - lastHeartbeatSentAt >= HEARTBEAT_MS) {
+      emitPlayback('timeupdate');
+      lastHeartbeatSentAt = now;
+    }
   }
 }, 1000);
 

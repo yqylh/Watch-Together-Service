@@ -302,6 +302,33 @@ button:disabled {
   padding: 12px;
 }
 
+.cover-wrap {
+  width: 100%;
+  margin-bottom: 10px;
+}
+
+.cover-image {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: #0f172a;
+}
+
+.cover-empty {
+  width: 100%;
+  min-height: 140px;
+  border-radius: 12px;
+  border: 1px dashed var(--line-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.7);
+}
+
 .video-item video,
 .watch-video,
 #localVideo,

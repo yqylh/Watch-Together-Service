@@ -25,7 +25,7 @@
       <div id="videoContent" class="columns hidden">
         <div class="card">
           <h2 id="videoTitle">加载中...</h2>
-          <video id="videoPlayer" class="watch-video" controls></video>
+          <div id="videoCoverWrap" class="cover-wrap"></div>
           <div id="videoMeta" class="small"></div>
           <div class="small" id="videoLink"></div>
         </div>
@@ -36,14 +36,6 @@
             <div class="form-row">
               <label for="roomName">放映室名称</label>
               <input id="roomName" name="roomName" placeholder="可选" />
-            </div>
-            <div class="form-row">
-              <label for="roomMode">播放模式</label>
-              <select id="roomMode" name="roomMode" required>
-                <option value="">请选择播放模式</option>
-                <option value="cloud">云端托管</option>
-                <option value="local_file">本地文件</option>
-              </select>
             </div>
             <button type="submit">创建并进入</button>
             <div id="roomStatus" class="status"></div>
@@ -57,6 +49,7 @@
       </div>
     </div>
 
+    <script src="/assets/common.js"></script>
     <script src="/assets/video.js"></script>
   </body>
 </html>

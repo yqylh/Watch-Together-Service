@@ -110,8 +110,10 @@ CREATE INDEX IF NOT EXISTS idx_video_jobs_created_at ON video_jobs(created_at);
 `);
 
 ensureColumn('videos', 'hash', "TEXT DEFAULT ''");
-ensureColumn('videos', 'source_type', "TEXT DEFAULT 'local_upload'");
+ensureColumn('videos', 'source_type', "TEXT DEFAULT 'local_hash'");
 ensureColumn('videos', 'source_value', "TEXT DEFAULT ''");
+ensureColumn('videos', 'cover_filename', "TEXT DEFAULT ''");
+ensureColumn('videos', 'cover_mime_type', "TEXT DEFAULT ''");
 ensureColumn('videos', 'oss_key', "TEXT DEFAULT ''");
 ensureColumn('videos', 'stored_in_oss', 'INTEGER DEFAULT 0');
 ensureColumn('videos', 'local_available', 'INTEGER DEFAULT 1');
@@ -127,7 +129,7 @@ ensureColumn('rooms', 'last_is_playing', 'INTEGER DEFAULT 0');
 ensureColumn('rooms', 'last_updated_at', "TEXT DEFAULT ''");
 ensureColumn('rooms', 'total_watched_seconds', 'REAL DEFAULT 0');
 ensureColumn('rooms', 'created_by_user_id', 'TEXT DEFAULT NULL');
-ensureColumn('rooms', 'room_mode', "TEXT DEFAULT 'cloud'");
+ensureColumn('rooms', 'room_mode', "TEXT DEFAULT 'local_file'");
 
 db.exec(`
 CREATE INDEX IF NOT EXISTS idx_videos_hash ON videos(hash);
@@ -174,6 +176,8 @@ const insertVideoStmt = db.prepare(`
     hash,
     source_type,
     source_value,
+    cover_filename,
+    cover_mime_type,
     oss_key,
     stored_in_oss,
     local_available,
@@ -191,6 +195,8 @@ const insertVideoStmt = db.prepare(`
     @hash,
     @sourceType,
     @sourceValue,
+    @coverFilename,
+    @coverMimeType,
     @ossKey,
     @storedInOss,
     @localAvailable,
@@ -251,6 +257,7 @@ const insertRoomStmt = db.prepare(`
 const getVideoStmt = db.prepare('SELECT * FROM videos WHERE id = ?');
 const getVideoByHashStmt = db.prepare('SELECT * FROM videos WHERE hash = ? ORDER BY datetime(created_at) ASC LIMIT 1');
 const listVideosStmt = db.prepare('SELECT * FROM videos ORDER BY datetime(created_at) DESC');
+const deleteVideoStmt = db.prepare('DELETE FROM videos WHERE id = ?');
 
 const getPlaylistStmt = db.prepare('SELECT * FROM playlists WHERE id = ?');
 const listPlaylistsStmt = db.prepare(`
@@ -277,6 +284,8 @@ const listPlaylistEpisodesStmt = db.prepare(`
     videos.hash AS video_hash,
     videos.source_type AS video_source_type,
     videos.source_value AS video_source_value,
+    videos.cover_filename AS video_cover_filename,
+    videos.cover_mime_type AS video_cover_mime_type,
     videos.oss_key AS video_oss_key,
     videos.stored_in_oss AS video_stored_in_oss,
     videos.local_available AS video_local_available,
@@ -287,6 +296,15 @@ const listPlaylistEpisodesStmt = db.prepare(`
   JOIN videos ON videos.id = playlist_items.video_id
   WHERE playlist_items.playlist_id = ?
   ORDER BY playlist_items.episode_index ASC
+`);
+const deletePlaylistStmt = db.prepare('DELETE FROM playlists WHERE id = ?');
+
+const updateVideoCoverStmt = db.prepare(`
+  UPDATE videos
+  SET
+    cover_filename = @coverFilename,
+    cover_mime_type = @coverMimeType
+  WHERE id = @videoId
 `);
 
 const getRoomStmt = db.prepare('SELECT * FROM rooms WHERE id = ?');
@@ -582,8 +600,10 @@ function createVideo(video) {
   const row = {
     ...video,
     hash: video.hash || '',
-    sourceType: video.sourceType || 'local_upload',
+    sourceType: video.sourceType || 'local_hash',
     sourceValue: video.sourceValue || '',
+    coverFilename: video.coverFilename || '',
+    coverMimeType: video.coverMimeType || '',
     ossKey: video.ossKey || '',
     storedInOss: video.storedInOss ? 1 : 0,
     localAvailable: typeof video.localAvailable === 'number' ? video.localAvailable : (video.localAvailable ? 1 : 0),
@@ -606,8 +626,21 @@ function getVideoByHash(hash) {
   return getVideoByHashStmt.get(hash) || null;
 }
 
+function updateVideoCover(videoId, coverFilename, coverMimeType) {
+  updateVideoCoverStmt.run({
+    videoId,
+    coverFilename: coverFilename || '',
+    coverMimeType: coverMimeType || '',
+  });
+  return getVideo(videoId);
+}
+
 function listVideos() {
   return listVideosStmt.all();
+}
+
+function deleteVideo(id) {
+  return deleteVideoStmt.run(id).changes > 0;
 }
 
 function createPlaylist({ playlist, episodeItems }) {
@@ -627,6 +660,10 @@ function listPlaylistEpisodes(playlistId) {
   return listPlaylistEpisodesStmt.all(playlistId);
 }
 
+function deletePlaylist(id) {
+  return deletePlaylistStmt.run(id).changes > 0;
+}
+
 function createRoom(room) {
   const row = {
     ...room,
@@ -641,7 +678,7 @@ function createRoom(room) {
     creatorName: room.creatorName || 'legacy',
     creatorToken: room.creatorToken || `legacy-${room.id}`,
     createdByUserId: room.createdByUserId || null,
-    roomMode: room.roomMode || 'cloud',
+    roomMode: room.roomMode || 'local_file',
   };
 
   insertRoomStmt.run(row);
@@ -832,12 +869,15 @@ module.exports = {
   createVideo,
   getVideo,
   getVideoByHash,
+  updateVideoCover,
   listVideos,
+  deleteVideo,
 
   createPlaylist,
   getPlaylist,
   listPlaylists,
   listPlaylistEpisodes,
+  deletePlaylist,
 
   createRoom,
   getRoom,
