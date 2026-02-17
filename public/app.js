@@ -1,10 +1,16 @@
+const loginForm = document.getElementById('loginForm');
+const registerForm = document.getElementById('registerForm');
+const logoutBtn = document.getElementById('logoutBtn');
+const authStatusEl = document.getElementById('authStatus');
+const currentUserEl = document.getElementById('currentUser');
+const appContentEl = document.getElementById('appContent');
+
 const uploadForm = document.getElementById('uploadForm');
 const uploadStatus = document.getElementById('uploadStatus');
-const remoteImportForm = document.getElementById('remoteImportForm');
-const remoteStatus = document.getElementById('remoteStatus');
-const sourceTypeEl = document.getElementById('sourceType');
-const serverPathRow = document.getElementById('serverPathRow');
-const remoteUrlRow = document.getElementById('remoteUrlRow');
+const uploadModeEl = document.getElementById('uploadMode');
+const videoFileEl = document.getElementById('videoFile');
+const videoFileLabelEl = document.getElementById('videoFileLabel');
+const uploadModeHintEl = document.getElementById('uploadModeHint');
 
 const playlistForm = document.getElementById('playlistForm');
 const playlistStatus = document.getElementById('playlistStatus');
@@ -15,44 +21,26 @@ const videoListEl = document.getElementById('videoList');
 const globalRoomListEl = document.getElementById('globalRoomList');
 const supportedFormatsEl = document.getElementById('supportedFormats');
 const storageInfoEl = document.getElementById('storageInfo');
-const uploadLimitHintEl = document.getElementById('uploadLimitHint');
-const remoteLimitHintEl = document.getElementById('remoteLimitHint');
 
-const rootLoginForm = document.getElementById('rootLoginForm');
-const rootLogoutBtn = document.getElementById('rootLogoutBtn');
-const rootStatusEl = document.getElementById('rootStatus');
-
-const ROOT_TOKEN_KEY = 'root_token';
+const AUTH_TOKEN_KEY = 'auth_token';
 let videosCache = [];
-let maxUploadBytes = 0;
+let currentUser = null;
 
-function getRootToken() {
-  return localStorage.getItem(ROOT_TOKEN_KEY) || '';
+function getAuthToken() {
+  return localStorage.getItem(AUTH_TOKEN_KEY) || '';
 }
 
-function setRootToken(token) {
+function setAuthToken(token) {
   if (token) {
-    localStorage.setItem(ROOT_TOKEN_KEY, token);
+    localStorage.setItem(AUTH_TOKEN_KEY, token);
   } else {
-    localStorage.removeItem(ROOT_TOKEN_KEY);
+    localStorage.removeItem(AUTH_TOKEN_KEY);
   }
-}
-
-function creatorTokenKey(roomId) {
-  return `room_creator_token_${roomId}`;
-}
-
-function getCreatorToken(roomId) {
-  return localStorage.getItem(creatorTokenKey(roomId)) || '';
-}
-
-function setCreatorToken(roomId, token) {
-  localStorage.setItem(creatorTokenKey(roomId), token);
 }
 
 async function apiFetch(url, options = {}) {
   const headers = new Headers(options.headers || {});
-  const token = getRootToken();
+  const token = getAuthToken();
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
   }
@@ -103,16 +91,39 @@ function formatBytes(value) {
   return `${size.toFixed(1)} ${units[idx]}`;
 }
 
+function normalizeHash(hash) {
+  return String(hash || '').trim().toLowerCase();
+}
+
+async function computeFileSha256Hex(file) {
+  const buffer = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest('SHA-256', buffer);
+  const bytes = new Uint8Array(digest);
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function syncUploadModeUI() {
+  const mode = String(uploadModeEl.value || 'cloud').trim();
+  const isLocalMode = mode === 'local_file';
+  videoFileEl.required = true;
+  if (isLocalMode) {
+    videoFileLabelEl.textContent = '本地文件（仅用于计算 hash）';
+    uploadModeHintEl.textContent = '本地模式不会上传文件本体，前端会计算 SHA-256 后仅提交 hash。';
+    return;
+  }
+  videoFileLabelEl.textContent = '视频文件';
+  uploadModeHintEl.textContent = '';
+}
+
 function mapJobStage(stage) {
   const dict = {
     upload_received: '上传完成，等待处理',
     hashing: '校验 hash',
+    registering_local_hash: '登记本地模式 hash',
     compressing: '压缩转码',
     deduplicating: '重复文件复用',
     storing_local: '写入播放池',
     uploading_oss: '后台传输到 OSS',
-    downloading_remote: '拉取远程文件',
-    reading_server_file: '读取服务器文件',
     completed: '已完成',
     failed: '失败',
   };
@@ -129,15 +140,30 @@ function mapJobStatus(status) {
   return '处理中';
 }
 
-function updateSourceTypeView() {
-  const type = sourceTypeEl.value;
-  if (type === 'server_path') {
-    serverPathRow.classList.remove('hidden');
-    remoteUrlRow.classList.add('hidden');
-  } else {
-    serverPathRow.classList.add('hidden');
-    remoteUrlRow.classList.remove('hidden');
+function canDeleteRoom(room) {
+  if (!currentUser) {
+    return false;
   }
+  return currentUser.role === 'root' || room.createdByUserId === currentUser.id;
+}
+
+function renderCurrentUser() {
+  if (!currentUser) {
+    currentUserEl.textContent = '未登录';
+    appContentEl.classList.add('hidden');
+    return;
+  }
+  currentUserEl.textContent = `用户: ${currentUser.username} | 角色: ${currentUser.role}`;
+  appContentEl.classList.remove('hidden');
+}
+
+function modeOptionsHtml(options = {}) {
+  const allowCloud = options.allowCloud !== false;
+  return `
+    <option value="">请选择播放模式</option>
+    ${allowCloud ? '<option value="cloud">云端托管</option>' : ''}
+    <option value="local_file">本地文件</option>
+  `;
 }
 
 function renderRoomRow(room) {
@@ -150,7 +176,7 @@ function renderRoomRow(room) {
 
   const info = document.createElement('div');
   info.className = 'small';
-  info.textContent = `${room.sourceLabel || ''} | 创建者: ${room.creatorName || '-'} | 在线: ${room.memberCount || 0} | 续播: 第 ${Number(room.latestEpisodeIndex || 0) + 1} 集 ${formatSeconds(room.latestCurrentTime || 0)} | 累计观看: ${formatSeconds(room.totalWatchedSeconds || 0)}`;
+  info.textContent = `${room.sourceLabel || ''} | 模式: ${room.roomMode || 'cloud'} | 创建者: ${room.creatorName || '-'} | 在线: ${room.memberCount || 0} | 续播: 第 ${Number(room.latestEpisodeIndex || 0) + 1} 集 ${formatSeconds(room.latestCurrentTime || 0)} | 累计观看: ${formatSeconds(room.totalWatchedSeconds || 0)}`;
 
   const meta = document.createElement('div');
   meta.className = 'small';
@@ -160,7 +186,7 @@ function renderRoomRow(room) {
   row.appendChild(info);
   row.appendChild(meta);
 
-  if (getCreatorToken(room.id) || getRootToken()) {
+  if (canDeleteRoom(room)) {
     const actions = document.createElement('div');
     actions.className = 'flex';
 
@@ -168,16 +194,9 @@ function renderRoomRow(room) {
     deleteBtn.textContent = '删除放映室';
     deleteBtn.className = 'danger';
     deleteBtn.addEventListener('click', async () => {
-      const creatorToken = getCreatorToken(room.id);
-      const headers = {};
-      if (creatorToken) {
-        headers['x-creator-token'] = creatorToken;
-      }
-
       try {
         await apiFetch(`/api/rooms/${room.id}`, {
           method: 'DELETE',
-          headers,
         });
         await Promise.all([loadVideos(), loadPlaylists(), loadGlobalRooms()]);
       } catch (err) {
@@ -199,9 +218,12 @@ function renderVideoCard(video) {
   const title = document.createElement('h3');
   title.textContent = video.title;
 
-  const player = document.createElement('video');
-  player.src = video.mediaUrl;
-  player.controls = true;
+  let player = null;
+  if (video.mediaUrl) {
+    player = document.createElement('video');
+    player.src = video.mediaUrl;
+    player.controls = true;
+  }
 
   const uniqueLink = document.createElement('a');
   uniqueLink.href = video.watchUrl;
@@ -210,6 +232,7 @@ function renderVideoCard(video) {
   const meta = document.createElement('div');
   meta.className = 'small';
   meta.textContent = `上传时间: ${formatDate(video.createdAt)} | 文件: ${video.originalName} | hash: ${video.contentHash || '-'} | 来源: ${video.sourceType} | 本地: ${video.localAvailable ? '有' : '无'} | OSS: ${video.storedInOss ? '有' : '无'}`;
+  const allowCloudMode = Boolean(video.mediaUrl);
 
   const roomForm = document.createElement('form');
   roomForm.className = 'card';
@@ -219,8 +242,10 @@ function renderVideoCard(video) {
       <input name="roomName" placeholder="可选" />
     </div>
     <div class="form-row">
-      <label>你的昵称</label>
-      <input name="creatorName" placeholder="例如：张三" required />
+      <label>播放模式</label>
+      <select name="roomMode" required>
+        ${modeOptionsHtml({ allowCloud: allowCloudMode })}
+      </select>
     </div>
     <button type="submit">基于此视频创建放映室</button>
   `;
@@ -229,18 +254,23 @@ function renderVideoCard(video) {
     event.preventDefault();
     const formData = new FormData(roomForm);
 
+    const roomMode = String(formData.get('roomMode') || '').trim();
+    if (!roomMode) {
+      alert('请选择播放模式');
+      return;
+    }
+
     try {
       const result = await apiFetch(`/api/videos/${video.id}/rooms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           roomName: formData.get('roomName') || '',
-          creatorName: formData.get('creatorName') || '匿名用户',
+          roomMode,
         }),
       });
 
-      setCreatorToken(result.room.id, result.creatorToken);
-      location.href = `/rooms/${result.room.id}?name=${encodeURIComponent(formData.get('creatorName') || '')}`;
+      location.href = `/rooms/${result.room.id}`;
     } catch (err) {
       alert(err.message);
     }
@@ -256,7 +286,14 @@ function renderVideoCard(video) {
   }
 
   item.appendChild(title);
-  item.appendChild(player);
+  if (player) {
+    item.appendChild(player);
+  } else {
+    const tip = document.createElement('div');
+    tip.className = 'small';
+    tip.textContent = '本地模式视频：服务端不存源文件，无法云端预览。';
+    item.appendChild(tip);
+  }
   item.appendChild(uniqueLink);
   item.appendChild(meta);
   item.appendChild(roomForm);
@@ -286,6 +323,7 @@ function renderPlaylistCard(playlist) {
 
   const roomForm = document.createElement('form');
   roomForm.className = 'card';
+  const allowCloudMode = playlist.episodes.every((ep) => Boolean(ep.mediaUrl));
 
   const startOptions = playlist.episodes
     .map((ep) => `<option value="${ep.episodeIndex}">第 ${ep.episodeIndex + 1} 集 - ${ep.title}</option>`)
@@ -297,8 +335,10 @@ function renderPlaylistCard(playlist) {
       <input name="roomName" placeholder="可选" />
     </div>
     <div class="form-row">
-      <label>你的昵称</label>
-      <input name="creatorName" required />
+      <label>播放模式</label>
+      <select name="roomMode" required>
+        ${modeOptionsHtml({ allowCloud: allowCloudMode })}
+      </select>
     </div>
     <div class="form-row">
       <label>起播集数</label>
@@ -311,19 +351,24 @@ function renderPlaylistCard(playlist) {
     event.preventDefault();
     const formData = new FormData(roomForm);
 
+    const roomMode = String(formData.get('roomMode') || '').trim();
+    if (!roomMode) {
+      alert('请选择播放模式');
+      return;
+    }
+
     try {
       const result = await apiFetch(`/api/playlists/${playlist.id}/rooms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           roomName: formData.get('roomName') || '',
-          creatorName: formData.get('creatorName') || '匿名用户',
+          roomMode,
           startEpisodeIndex: Number(formData.get('startEpisodeIndex') || 0),
         }),
       });
 
-      setCreatorToken(result.room.id, result.creatorToken);
-      location.href = `/rooms/${result.room.id}?name=${encodeURIComponent(formData.get('creatorName') || '')}`;
+      location.href = `/rooms/${result.room.id}`;
     } catch (err) {
       alert(err.message);
     }
@@ -362,21 +407,15 @@ async function loadSupportedFormats() {
     .map((fmt) => `${fmt.extension}: ${fmt.mimeTypes.join(', ')}`)
     .join('<br/>');
   supportedFormatsEl.innerHTML = `${lines}<br/><br/>${data.note || ''}`;
-  maxUploadBytes = Number(data.storage?.maxUploadBytes || 0);
-  const limitLabel = maxUploadBytes > 0 ? formatBytes(maxUploadBytes) : '未限制';
-  uploadLimitHintEl.textContent = `上传大小限制: ${limitLabel}`;
-  remoteLimitHintEl.textContent = `导入大小限制: ${limitLabel}`;
 }
 
 async function loadStorageInfo() {
   const data = await apiFetch('/api/storage');
   const pool = data.pool || {};
-  const uploadLimit = data.uploadLimit || {};
   const disk = data.disk || null;
   const lines = [];
   lines.push(`播放池: 已用 ${formatBytes(pool.usageBytes)} / 上限 ${formatBytes(pool.maxBytes)} (可用 ${formatBytes(pool.availableBytes)})`);
   lines.push(`池中文件数: ${Number(pool.fileCount || 0)}`);
-  lines.push(`上传大小限制: ${uploadLimit.maxLabel || formatBytes(uploadLimit.maxBytes)}`);
   if (disk) {
     lines.push(`所在磁盘: 剩余 ${formatBytes(disk.freeBytes)} / 总计 ${formatBytes(disk.totalBytes)}`);
   } else {
@@ -451,9 +490,34 @@ uploadForm.addEventListener('submit', async (event) => {
 
   try {
     const formData = new FormData(uploadForm);
-    const file = formData.get('video');
-    if (file && maxUploadBytes > 0 && file.size > maxUploadBytes) {
-      throw new Error(`文件过大，限制 ${formatBytes(maxUploadBytes)}`);
+    const uploadMode = String(formData.get('uploadMode') || 'cloud').trim();
+    if (!['cloud', 'local_file'].includes(uploadMode)) {
+      throw new Error('上传模式无效');
+    }
+
+    const selectedFile = formData.get('video');
+    if (!(selectedFile instanceof File) || !selectedFile.name) {
+      throw new Error('请选择本地视频文件');
+    }
+
+    if (uploadMode === 'cloud') {
+      if (!(selectedFile instanceof File) || !selectedFile.name) {
+        throw new Error('云端托管模式必须选择视频文件');
+      }
+    } else {
+      uploadStatus.textContent = '本地模式：正在前端计算 SHA-256...';
+      let contentHash = '';
+      try {
+        contentHash = normalizeHash(await computeFileSha256Hex(selectedFile));
+      } catch (err) {
+        throw new Error(`计算 hash 失败: ${err.message}`);
+      }
+      if (!/^[a-f0-9]{64}$/.test(contentHash)) {
+        throw new Error('本地模式 hash 计算失败');
+      }
+      formData.set('contentHash', contentHash);
+      formData.set('localFileName', selectedFile.name || '');
+      formData.delete('video');
     }
 
     const submitResult = await apiFetch('/api/videos', {
@@ -473,57 +537,10 @@ uploadForm.addEventListener('submit', async (event) => {
 
     uploadStatus.textContent = `上传成功: ${doneJob.video?.title || doneJob.videoId || '已入库'}`;
     uploadForm.reset();
+    syncUploadModeUI();
     await Promise.all([loadVideos(), loadPlaylists(), loadGlobalRooms(), loadStorageInfo()]);
   } catch (err) {
     uploadStatus.textContent = `上传失败: ${err.message}`;
-  }
-});
-
-remoteImportForm.addEventListener('submit', async (event) => {
-  event.preventDefault();
-  remoteStatus.textContent = '导入任务创建中...';
-
-  const formData = new FormData(remoteImportForm);
-  const sourceType = String(formData.get('sourceType') || 'server_path');
-
-  const payload = {
-    title: formData.get('title') || '',
-    description: formData.get('description') || '',
-    sourceType,
-    originalName: formData.get('originalName') || '',
-    expectedHash: formData.get('expectedHash') || '',
-  };
-
-  if (sourceType === 'server_path') {
-    payload.serverPath = formData.get('serverPath') || '';
-  } else {
-    payload.remoteUrl = formData.get('remoteUrl') || '';
-  }
-
-  try {
-    const submitResult = await apiFetch('/api/videos/import-remote', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    const jobId = submitResult.job?.id;
-    if (!jobId) {
-      throw new Error('导入任务创建失败');
-    }
-
-    const doneJob = await pollVideoJob(jobId, (job) => {
-      const pct = Math.max(0, Math.min(100, Math.round(Number(job.progress || 0) * 100)));
-      remoteStatus.textContent = `状态: ${mapJobStatus(job.status)} | 阶段: ${mapJobStage(job.stage)} | ${pct}% | ${job.message || ''}`;
-    });
-
-    remoteStatus.textContent = `导入成功: ${doneJob.video?.title || doneJob.videoId || '已入库'}`;
-    remoteImportForm.reset();
-    sourceTypeEl.value = sourceType;
-    updateSourceTypeView();
-    await Promise.all([loadVideos(), loadPlaylists(), loadGlobalRooms(), loadStorageInfo()]);
-  } catch (err) {
-    remoteStatus.textContent = `导入失败: ${err.message}`;
   }
 });
 
@@ -555,13 +572,13 @@ playlistForm.addEventListener('submit', async (event) => {
   }
 });
 
-rootLoginForm.addEventListener('submit', async (event) => {
+loginForm.addEventListener('submit', async (event) => {
   event.preventDefault();
-  rootStatusEl.textContent = '登录中...';
+  authStatusEl.textContent = '登录中...';
+  const formData = new FormData(loginForm);
 
-  const formData = new FormData(rootLoginForm);
   try {
-    const result = await apiFetch('/api/auth/root/login', {
+    const result = await apiFetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -569,46 +586,83 @@ rootLoginForm.addEventListener('submit', async (event) => {
         password: formData.get('password'),
       }),
     });
-
-    setRootToken(result.token);
-    rootStatusEl.textContent = 'Root 登录成功';
-    await Promise.all([loadVideos(), loadPlaylists(), loadGlobalRooms(), loadStorageInfo()]);
+    setAuthToken(result.token);
+    currentUser = result.user;
+    renderCurrentUser();
+    authStatusEl.textContent = '登录成功';
+    await loadAllBusinessData();
   } catch (err) {
-    rootStatusEl.textContent = `登录失败: ${err.message}`;
+    authStatusEl.textContent = `登录失败: ${err.message}`;
   }
 });
 
-rootLogoutBtn.addEventListener('click', async () => {
+registerForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  authStatusEl.textContent = '注册中...';
+  const formData = new FormData(registerForm);
+
   try {
-    await apiFetch('/api/auth/root/logout', { method: 'POST' });
+    const result = await apiFetch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: formData.get('username'),
+        password: formData.get('password'),
+      }),
+    });
+    setAuthToken(result.token);
+    currentUser = result.user;
+    renderCurrentUser();
+    authStatusEl.textContent = '注册成功并已登录';
+    await loadAllBusinessData();
+  } catch (err) {
+    authStatusEl.textContent = `注册失败: ${err.message}`;
+  }
+});
+
+logoutBtn.addEventListener('click', async () => {
+  try {
+    await apiFetch('/api/auth/logout', { method: 'POST' });
   } catch (_err) {
     // ignore
   }
-
-  setRootToken('');
-  rootStatusEl.textContent = 'Root 已退出';
-  await Promise.all([loadVideos(), loadPlaylists(), loadGlobalRooms(), loadStorageInfo()]);
+  setAuthToken('');
+  currentUser = null;
+  renderCurrentUser();
+  authStatusEl.textContent = '已退出登录';
 });
 
-sourceTypeEl.addEventListener('change', updateSourceTypeView);
+uploadModeEl.addEventListener('change', syncUploadModeUI);
 
-async function checkRootState() {
+async function checkAuthState() {
   try {
-    const result = await apiFetch('/api/auth/root/me');
-    rootStatusEl.textContent = result.isRoot ? '当前已是 Root' : '未登录 Root';
+    const result = await apiFetch('/api/auth/me');
+    currentUser = result.user;
+    renderCurrentUser();
+    return true;
   } catch (_err) {
-    rootStatusEl.textContent = '未登录 Root';
+    currentUser = null;
+    renderCurrentUser();
+    return false;
   }
 }
 
-(async function init() {
-  updateSourceTypeView();
+async function loadAllBusinessData() {
   await Promise.all([
     loadStorageInfo(),
     loadSupportedFormats(),
     loadVideos(),
     loadPlaylists(),
     loadGlobalRooms(),
-    checkRootState(),
   ]);
+}
+
+(async function init() {
+  syncUploadModeUI();
+  const authed = await checkAuthState();
+  if (!authed) {
+    authStatusEl.textContent = '请先登录';
+    return;
+  }
+  await loadAllBusinessData();
 })();

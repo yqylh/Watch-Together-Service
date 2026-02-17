@@ -1,5 +1,8 @@
 const roomId = window.location.pathname.split('/').filter(Boolean).pop();
 
+const authInfoEl = document.getElementById('authInfo');
+const roomAppEl = document.getElementById('roomApp');
+
 const roomTitleEl = document.getElementById('roomTitle');
 const watchVideoEl = document.getElementById('watchVideo');
 const playbackRateEl = document.getElementById('playbackRate');
@@ -11,12 +14,18 @@ const voiceMuteBtn = document.getElementById('voiceMuteBtn');
 const autoplayCountdownEl = document.getElementById('autoplayCountdown');
 const cancelAutoplayBtn = document.getElementById('cancelAutoplayBtn');
 const watchStatusEl = document.getElementById('watchStatus');
+const playbackFormInfoEl = document.getElementById('playbackFormInfo');
 const deleteRoomBtn = document.getElementById('deleteRoomBtn');
 const episodeListEl = document.getElementById('episodeList');
 
+const localFileGateEl = document.getElementById('localFileGate');
+const localFileHintEl = document.getElementById('localFileHint');
+const localFilePickerEl = document.getElementById('localFilePicker');
+const verifyLocalFileBtn = document.getElementById('verifyLocalFileBtn');
+const localFileStatusEl = document.getElementById('localFileStatus');
+
 const joinCamEl = document.getElementById('joinCam');
 const joinMicEl = document.getElementById('joinMic');
-const displayNameEl = document.getElementById('displayName');
 const joinBtn = document.getElementById('joinBtn');
 const leaveBtn = document.getElementById('leaveBtn');
 
@@ -28,17 +37,20 @@ const chatListEl = document.getElementById('chatList');
 const chatFormEl = document.getElementById('chatForm');
 const chatInputEl = document.getElementById('chatInput');
 
-const ROOT_TOKEN_KEY = 'root_token';
+const AUTH_TOKEN_KEY = 'auth_token';
 
-const socket = io();
+let socket = null;
 const peers = new Map();
 const participants = new Map();
+const localFileMapByHash = new Map();
+const verifiedEpisodeHashes = new Map();
 
 let joined = false;
 let localStream = null;
 let playbackSuppressed = false;
 let seekDebounce = null;
 let roomData = null;
+let currentUser = null;
 let episodes = [];
 let currentEpisodeIndex = 0;
 let episodeProgressByIndex = new Map();
@@ -55,22 +67,28 @@ let autoNextTargetEpisode = null;
 let driftSoftThresholdSec = 0.2;
 let driftHardThresholdSec = 1.2;
 let autoplayCountdownDefaultSec = 8;
+let roomMode = 'cloud';
+let localFileRequirement = null;
+let playbackLocked = false;
+let localVerifyInFlightKey = '';
+let localObjectUrl = '';
+let localObjectHash = '';
 
-function getRootToken() {
-  return localStorage.getItem(ROOT_TOKEN_KEY) || '';
+function getAuthToken() {
+  return localStorage.getItem(AUTH_TOKEN_KEY) || '';
 }
 
-function creatorTokenKey(targetRoomId) {
-  return `room_creator_token_${targetRoomId}`;
+function normalizeHash(hash) {
+  return String(hash || '').trim().toLowerCase();
 }
 
-function getCreatorToken(targetRoomId) {
-  return localStorage.getItem(creatorTokenKey(targetRoomId)) || '';
+function localVerifyKey(episodeIndex, hash) {
+  return `${Number(episodeIndex || 0)}:${normalizeHash(hash)}`;
 }
 
 async function apiFetch(url, options = {}) {
   const headers = new Headers(options.headers || {});
-  const token = getRootToken();
+  const token = getAuthToken();
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
   }
@@ -92,11 +110,76 @@ function setStatus(text) {
   watchStatusEl.textContent = text;
 }
 
+function mapSourceTypeLabel(sourceType) {
+  if (sourceType === 'local_hash') {
+    return '本地文件模式（仅 hash）';
+  }
+  return '云端托管文件';
+}
+
+function updatePlaybackFormInfo() {
+  const episode = episodes[normalizeEpisodeIndex(currentEpisodeIndex)] || null;
+  if (!episode) {
+    playbackFormInfoEl.textContent = '';
+    return;
+  }
+  const sourceLabel = mapSourceTypeLabel(episode.sourceType);
+  const playingFrom = episode.mediaUrl ? '云端媒体流' : '本地文件';
+  playbackFormInfoEl.textContent = `当前视频形式: ${sourceLabel} | 当前播放来源: ${playingFrom}`;
+}
+
+function setLocalFileStatus(text) {
+  localFileStatusEl.textContent = text || '';
+}
+
 function setPlaybackSuppressed(durationMs = 280) {
   playbackSuppressed = true;
   setTimeout(() => {
     playbackSuppressed = false;
   }, durationMs);
+}
+
+function clearLocalObjectUrl() {
+  if (!localObjectUrl) {
+    localObjectHash = '';
+    return;
+  }
+  URL.revokeObjectURL(localObjectUrl);
+  localObjectUrl = '';
+  localObjectHash = '';
+}
+
+function setWatchVideoSource(sourceUrl, isLocalObjectUrl = false, localHash = '') {
+  const currentSrc = watchVideoEl.getAttribute('src') || '';
+  if (currentSrc === String(sourceUrl || '')) {
+    return;
+  }
+
+  clearLocalObjectUrl();
+  if (isLocalObjectUrl && sourceUrl) {
+    localObjectUrl = sourceUrl;
+    localObjectHash = normalizeHash(localHash);
+  }
+  if (sourceUrl) {
+    watchVideoEl.src = sourceUrl;
+    return;
+  }
+  watchVideoEl.removeAttribute('src');
+  watchVideoEl.load();
+}
+
+function setPlaybackLocked(locked, message) {
+  playbackLocked = Boolean(locked);
+  watchVideoEl.controls = !playbackLocked;
+  playbackRateEl.disabled = playbackLocked;
+
+  if (playbackLocked) {
+    setPlaybackSuppressed(180);
+    watchVideoEl.pause();
+    if (message) {
+      setStatus(message);
+    }
+  }
 }
 
 function formatDate(value) {
@@ -121,7 +204,7 @@ function renderParticipants() {
   for (const [id, name] of participants.entries()) {
     const row = document.createElement('div');
     row.className = 'participant-item';
-    row.textContent = id === socket.id ? `${name} (你)` : name;
+    row.textContent = socket && id === socket.id ? `${name} (你)` : name;
     participantListEl.appendChild(row);
   }
 }
@@ -222,7 +305,7 @@ async function createPeerConnection(peerId, peerName, shouldCreateOffer) {
   };
 
   pc.onicecandidate = (event) => {
-    if (!event.candidate) {
+    if (!event.candidate || !socket) {
       return;
     }
     socket.emit('webrtc-ice-candidate', {
@@ -239,7 +322,7 @@ async function createPeerConnection(peerId, peerName, shouldCreateOffer) {
     }
   };
 
-  if (shouldCreateOffer) {
+  if (shouldCreateOffer && socket) {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     socket.emit('webrtc-offer', {
@@ -276,7 +359,7 @@ async function prepareLocalMedia() {
 }
 
 function emitPlayback(action, overrides = {}, force = false) {
-  if (!joined || (!force && playbackSuppressed)) {
+  if (!socket || !joined || playbackLocked || (!force && playbackSuppressed)) {
     return;
   }
 
@@ -457,7 +540,7 @@ function startAutoNextCountdown(targetEpisode, seconds = autoplayCountdownDefaul
 }
 
 function correctPlaybackDrift(options = {}) {
-  if (!joined || !authoritativeState) {
+  if (!joined || !authoritativeState || playbackLocked) {
     return;
   }
 
@@ -512,6 +595,101 @@ function correctPlaybackDrift(options = {}) {
   }
 }
 
+function buildRequirementFromEpisode(index) {
+  const episode = episodes[normalizeEpisodeIndex(index)];
+  if (!episode) {
+    return null;
+  }
+
+  return {
+    roomId,
+    episodeIndex: normalizeEpisodeIndex(index),
+    videoId: episode.videoId,
+    title: episode.title,
+    contentHash: normalizeHash(episode.contentHash || ''),
+  };
+}
+
+function normalizeRequirement(payload) {
+  if (!payload) {
+    return null;
+  }
+
+  const normalized = {
+    roomId: payload.roomId || roomId,
+    episodeIndex: normalizeEpisodeIndex(payload.episodeIndex),
+    videoId: payload.videoId || '',
+    title: payload.title || '',
+    contentHash: normalizeHash(payload.contentHash || ''),
+  };
+
+  if (!normalized.contentHash) {
+    return buildRequirementFromEpisode(normalized.episodeIndex);
+  }
+  return normalized;
+}
+
+function markEpisodeVerified(episodeIndex, hash) {
+  const safeHash = normalizeHash(hash);
+  if (!safeHash) {
+    return;
+  }
+  verifiedEpisodeHashes.set(Number(episodeIndex || 0), safeHash);
+}
+
+function isEpisodeVerified(episodeIndex, hash) {
+  const safeHash = normalizeHash(hash);
+  if (!safeHash) {
+    return false;
+  }
+  const saved = verifiedEpisodeHashes.get(Number(episodeIndex || 0));
+  return saved === safeHash;
+}
+
+function getCurrentRequirement() {
+  const fallback = buildRequirementFromEpisode(currentEpisodeIndex);
+  if (!localFileRequirement) {
+    return fallback;
+  }
+  if (Number(localFileRequirement.episodeIndex) !== Number(currentEpisodeIndex)) {
+    return fallback;
+  }
+  return localFileRequirement;
+}
+
+function renderLocalFileGate() {
+  if (roomMode !== 'local_file') {
+    localFileGateEl.classList.add('hidden');
+    setPlaybackLocked(false);
+    return;
+  }
+
+  localFileGateEl.classList.remove('hidden');
+  const requirement = getCurrentRequirement();
+
+  if (!requirement || !requirement.contentHash) {
+    localFileHintEl.textContent = '当前集缺少 contentHash，暂时无法校验。';
+    setPlaybackLocked(true, '当前集缺少校验信息，播放已锁定');
+    return;
+  }
+
+  localFileRequirement = requirement;
+  localFileHintEl.textContent = `第 ${requirement.episodeIndex + 1} 集: ${requirement.title || '-'} | 需要 SHA-256: ${requirement.contentHash}`;
+
+  if (isEpisodeVerified(requirement.episodeIndex, requirement.contentHash)) {
+    setPlaybackLocked(false);
+    if (!localFileStatusEl.textContent) {
+      setLocalFileStatus('当前集已校验通过');
+    }
+    return;
+  }
+
+  setPlaybackLocked(true, '当前集未完成本地文件校验，播放已锁定');
+  if (!joined) {
+    setLocalFileStatus('请先加入房间，再校验当前集文件');
+  }
+}
+
 function renderEpisodeList() {
   episodeListEl.innerHTML = '';
   if (!episodes.length) {
@@ -537,7 +715,9 @@ function renderEpisodeList() {
     const progressText = progress
       ? `进度: ${formatSeconds(progress.lastPositionSeconds || 0)} | 最远: ${formatSeconds(progress.maxPositionSeconds || 0)} | 已看: ${formatSeconds(progress.watchedSeconds || 0)}`
       : '进度: 未开始';
-    hash.textContent = `hash: ${ep.contentHash || '-'} | ${progressText}`;
+    const verifiedText = isEpisodeVerified(idx, ep.contentHash || '') ? '已校验' : '未校验';
+    const sourceLabel = mapSourceTypeLabel(ep.sourceType);
+    hash.textContent = `形式: ${sourceLabel} | hash: ${ep.contentHash || '-'} | ${verifiedText} | ${progressText}`;
 
     row.appendChild(btn);
     row.appendChild(hash);
@@ -559,9 +739,25 @@ async function setEpisode(index, options = {}) {
     return;
   }
 
-  if (changed || watchVideoEl.src !== new URL(episode.mediaUrl, window.location.origin).href) {
-    watchVideoEl.src = episode.mediaUrl;
-    await waitForMetadata(watchVideoEl);
+  if (episode.mediaUrl) {
+    const absolute = new URL(episode.mediaUrl, window.location.origin).href;
+    if (changed || watchVideoEl.currentSrc !== absolute) {
+      setWatchVideoSource(episode.mediaUrl, false);
+      await waitForMetadata(watchVideoEl);
+    }
+  } else {
+    const hash = normalizeHash(episode.contentHash || '');
+    const localFile = hash ? localFileMapByHash.get(hash) : null;
+    if (localFile) {
+      const currentSrc = watchVideoEl.getAttribute('src') || '';
+      const canReuseCurrent = Boolean(currentSrc) && localObjectHash === hash;
+      if (!canReuseCurrent) {
+        setWatchVideoSource(URL.createObjectURL(localFile), true, hash);
+        await waitForMetadata(watchVideoEl);
+      }
+    } else {
+      setWatchVideoSource('', false);
+    }
   }
 
   if (Number.isFinite(Number(options.resumeTime))) {
@@ -573,6 +769,12 @@ async function setEpisode(index, options = {}) {
     }
   }
 
+  if (!localFileRequirement || Number(localFileRequirement.episodeIndex) !== currentEpisodeIndex) {
+    localFileRequirement = buildRequirementFromEpisode(currentEpisodeIndex);
+  }
+
+  updatePlaybackFormInfo();
+  renderLocalFileGate();
   renderEpisodeList();
 }
 
@@ -583,19 +785,24 @@ async function switchEpisode(index, shouldEmit, autoPlayNext, options = {}) {
     resumeTime: options.resumeTime,
     useSavedProgress: options.useSavedProgress !== false,
   });
+
   if (!Number.isFinite(Number(options.resumeTime)) && options.useSavedProgress === false) {
     watchVideoEl.currentTime = 0;
   }
-  if (autoPlayNext) {
+
+  if (playbackLocked) {
+    watchVideoEl.pause();
+  } else if (autoPlayNext) {
     watchVideoEl.play().catch(() => {});
   } else {
     watchVideoEl.pause();
   }
+
   if (shouldEmit) {
     emitPlayback('episode-switch', {
       episodeIndex: currentEpisodeIndex,
       currentTime: watchVideoEl.currentTime || 0,
-      isPlaying: Boolean(autoPlayNext),
+      isPlaying: Boolean(autoPlayNext && !playbackLocked),
       playbackRate: watchVideoEl.playbackRate || 1,
     }, true);
   }
@@ -629,6 +836,12 @@ async function applyPlaybackState(state, actionHint) {
 
   cancelAutoNextCountdown(false);
 
+  if (playbackLocked) {
+    watchVideoEl.pause();
+    renderEpisodeList();
+    return;
+  }
+
   if (state.isPlaying || action === 'play') {
     watchVideoEl.play().catch(() => {});
   } else if (action === 'pause' || action === 'seek' || !state.isPlaying) {
@@ -645,7 +858,7 @@ async function applyPlaybackState(state, actionHint) {
 }
 
 function maybeCorrectPlaybackDrift() {
-  if (!joined || playbackSuppressed || !authoritativeState) {
+  if (!joined || playbackSuppressed || !authoritativeState || playbackLocked) {
     return;
   }
   if (!watchVideoEl.paused || authoritativeState.isPlaying) {
@@ -653,12 +866,113 @@ function maybeCorrectPlaybackDrift() {
   }
 }
 
-async function joinRoom() {
-  if (joined) {
+function verifyRequirementThroughSocket(requirement) {
+  if (!socket || !joined || !requirement?.contentHash) {
     return;
   }
 
-  const displayName = (displayNameEl.value || '').trim() || `用户-${Math.random().toString(16).slice(2, 7)}`;
+  const key = localVerifyKey(requirement.episodeIndex, requirement.contentHash);
+  if (localVerifyInFlightKey === key) {
+    return;
+  }
+
+  localVerifyInFlightKey = key;
+  socket.emit('local-file-verified', {
+    episodeIndex: requirement.episodeIndex,
+    contentHash: requirement.contentHash,
+  }, (result) => {
+    localVerifyInFlightKey = '';
+    if (!result?.ok) {
+      setLocalFileStatus(`服务端校验失败: ${result?.error || '未知错误'}`);
+      renderLocalFileGate();
+      return;
+    }
+
+    markEpisodeVerified(requirement.episodeIndex, requirement.contentHash);
+    setLocalFileStatus(`第 ${Number(requirement.episodeIndex || 0) + 1} 集校验通过`);
+    renderLocalFileGate();
+
+    if (authoritativeState && Number(authoritativeState.episodeIndex || 0) === Number(requirement.episodeIndex || 0)) {
+      applyPlaybackState(authoritativeState, authoritativeState.action || 'seek').catch((err) => {
+        console.error('apply playback after local verify failed', err);
+      });
+    }
+  });
+}
+
+function tryAutoVerifyCurrentRequirement() {
+  if (roomMode !== 'local_file') {
+    return;
+  }
+  const requirement = getCurrentRequirement();
+  if (!requirement || !requirement.contentHash) {
+    return;
+  }
+  if (isEpisodeVerified(requirement.episodeIndex, requirement.contentHash)) {
+    renderLocalFileGate();
+    return;
+  }
+
+  if (localFileMapByHash.has(requirement.contentHash)) {
+    verifyRequirementThroughSocket(requirement);
+  }
+}
+
+async function computeFileSha256Hex(file) {
+  const buffer = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest('SHA-256', buffer);
+  const bytes = new Uint8Array(digest);
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function verifySelectedLocalFile() {
+  if (roomMode !== 'local_file') {
+    setLocalFileStatus('当前房间不是本地文件模式');
+    return;
+  }
+
+  if (!joined || !socket) {
+    setLocalFileStatus('请先加入房间');
+    return;
+  }
+
+  const requirement = getCurrentRequirement();
+  if (!requirement || !requirement.contentHash) {
+    setLocalFileStatus('当前集缺少校验信息');
+    return;
+  }
+
+  const file = localFilePickerEl.files && localFilePickerEl.files[0];
+  if (!file) {
+    setLocalFileStatus('请选择本地文件');
+    return;
+  }
+
+  setLocalFileStatus('计算 SHA-256 中...');
+
+  let calculatedHash;
+  try {
+    calculatedHash = normalizeHash(await computeFileSha256Hex(file));
+  } catch (err) {
+    setLocalFileStatus(`计算 hash 失败: ${err.message}`);
+    return;
+  }
+
+  if (calculatedHash !== requirement.contentHash) {
+    setLocalFileStatus(`hash 不匹配，期望 ${requirement.contentHash}，实际 ${calculatedHash}`);
+    renderLocalFileGate();
+    return;
+  }
+
+  localFileMapByHash.set(calculatedHash, file);
+  setLocalFileStatus('本地 hash 校验通过，正在同步到房间...');
+  verifyRequirementThroughSocket(requirement);
+}
+
+async function joinRoom() {
+  if (joined || !socket) {
+    return;
+  }
 
   try {
     await prepareLocalMedia();
@@ -666,7 +980,7 @@ async function joinRoom() {
     // ignore
   }
 
-  socket.emit('join-room', { roomId, displayName }, (result) => {
+  socket.emit('join-room', { roomId }, (result) => {
     if (!result?.ok) {
       setStatus(result?.error || '加入失败');
       return;
@@ -674,13 +988,19 @@ async function joinRoom() {
 
     joined = true;
     setStatus('已加入放映室');
-    participants.set(socket.id, displayName);
-    renderParticipants();
+
+    if (currentUser?.username && socket.id) {
+      participants.set(socket.id, currentUser.username);
+      renderParticipants();
+    }
+
+    tryAutoVerifyCurrentRequirement();
+    renderLocalFileGate();
   });
 }
 
 function leaveRoom() {
-  if (joined) {
+  if (joined && socket) {
     socket.emit('leave-room');
   }
   joined = false;
@@ -701,13 +1021,24 @@ function leaveRoom() {
     localStream = null;
   }
   localVideoEl.srcObject = null;
+  clearLocalObjectUrl();
 
   setStatus('已离开放映室');
+}
+
+function canDeleteRoom() {
+  if (!currentUser || !roomData?.room) {
+    return false;
+  }
+  return currentUser.role === 'root' || roomData.room.createdByUserId === currentUser.id;
 }
 
 async function initRoomInfo() {
   const result = await apiFetch(`/api/rooms/${roomId}`);
   roomData = result;
+  roomMode = result.room?.roomMode || 'cloud';
+  localFileRequirement = normalizeRequirement(result.localFileRequirement);
+
   const syncConfig = result.syncConfig || {};
   driftSoftThresholdSec = Math.max(0.05, Number(syncConfig.driftSoftThresholdMs || 200) / 1000);
   driftHardThresholdSec = Math.max(
@@ -723,19 +1054,14 @@ async function initRoomInfo() {
     (result.progress?.episodes || []).map((item) => [Number(item.episodeIndex || 0), item]),
   );
 
-  const queryName = new URLSearchParams(window.location.search).get('name');
-  if (queryName) {
-    displayNameEl.value = queryName;
-  }
-
-  const canDelete = Boolean(getCreatorToken(roomId) || getRootToken());
-  if (canDelete) {
+  if (canDeleteRoom()) {
     deleteRoomBtn.classList.remove('hidden');
   }
 
   await setEpisode(currentEpisodeIndex, {
     resumeTime: Number(result.state?.currentTime || 0),
   });
+
   videoVolumeLevel = Math.max(0, Math.min(1, Number(videoVolumeEl.value || 100) / 100));
   voiceVolumeLevel = Math.max(0, Math.min(1, Number(voiceVolumeEl.value || 100) / 100));
   applyVideoVolume();
@@ -745,20 +1071,152 @@ async function initRoomInfo() {
     watchVideoEl.playbackRate = Number(result.state.playbackRate);
     playbackRateEl.value = String(result.state.playbackRate);
   }
+
   setAuthoritativeState(result.state || null);
+  renderLocalFileGate();
 }
 
 async function deleteCurrentRoom() {
-  const creatorToken = getCreatorToken(roomId);
-  const headers = {};
-  if (creatorToken) {
-    headers['x-creator-token'] = creatorToken;
-  }
-
   await apiFetch(`/api/rooms/${roomId}`, {
     method: 'DELETE',
-    headers,
   });
+}
+
+function bindSocketEvents() {
+  if (!socket) {
+    return;
+  }
+
+  socket.on('connect_error', (err) => {
+    setStatus(`实时连接失败: ${err.message || '未知错误'}`);
+  });
+
+  socket.on('existing-participants', async ({ participants: list }) => {
+    for (const member of list) {
+      participants.set(member.id, member.name);
+      try {
+        await createPeerConnection(member.id, member.name, true);
+      } catch (err) {
+        console.error('create offer failed', err);
+      }
+    }
+    renderParticipants();
+  });
+
+  socket.on('participant-joined', ({ id, name }) => {
+    participants.set(id, name);
+    renderParticipants();
+  });
+
+  socket.on('participant-left', ({ id }) => {
+    participants.delete(id);
+    closePeer(id);
+    renderParticipants();
+  });
+
+  socket.on('chat-history', ({ messages }) => {
+    chatListEl.innerHTML = '';
+    messages.forEach(appendChatMessage);
+  });
+
+  socket.on('chat-message', (message) => {
+    appendChatMessage(message);
+  });
+
+  socket.on('playback-state', (state) => {
+    applyPlaybackState(state, state?.isPlaying ? 'play' : 'pause').catch((err) => {
+      console.error('apply playback state failed', err);
+    });
+  });
+
+  socket.on('playback-update', (state) => {
+    applyPlaybackState(state, state?.action).catch((err) => {
+      console.error('apply playback update failed', err);
+    });
+  });
+
+  socket.on('local-file-required', (payload) => {
+    localFileRequirement = normalizeRequirement(payload);
+    setLocalFileStatus('当前集需要本地文件校验');
+    renderLocalFileGate();
+    tryAutoVerifyCurrentRequirement();
+  });
+
+  socket.on('playback-denied', (payload = {}) => {
+    if (payload.reason === 'local-file-unverified') {
+      const fallbackRequirement = buildRequirementFromEpisode(Number(payload.requiredEpisodeIndex || currentEpisodeIndex));
+      if (fallbackRequirement) {
+        localFileRequirement = fallbackRequirement;
+      }
+      setStatus('播放被拒绝：请先校验当前集本地文件');
+      setLocalFileStatus('播放权限被拒绝，请完成本地文件校验');
+      renderLocalFileGate();
+
+      if (authoritativeState) {
+        applyPlaybackState(authoritativeState, 'seek').catch((err) => {
+          console.error('realign after playback denied failed', err);
+        });
+      }
+    }
+  });
+
+  socket.on('webrtc-offer', async ({ fromId, sdp, name }) => {
+    try {
+      participants.set(fromId, name || '远端用户');
+      renderParticipants();
+
+      const pc = await createPeerConnection(fromId, name, false);
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      socket.emit('webrtc-answer', {
+        targetId: fromId,
+        sdp: answer,
+      });
+    } catch (err) {
+      console.error('webrtc-offer handling failed', err);
+    }
+  });
+
+  socket.on('webrtc-answer', async ({ fromId, sdp }) => {
+    const peer = peers.get(fromId);
+    if (!peer) {
+      return;
+    }
+    try {
+      await peer.pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    } catch (err) {
+      console.error('set answer failed', err);
+    }
+  });
+
+  socket.on('webrtc-ice-candidate', async ({ fromId, candidate }) => {
+    const peer = peers.get(fromId);
+    if (!peer || !candidate) {
+      return;
+    }
+
+    try {
+      await peer.pc.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch (err) {
+      console.error('add ICE failed', err);
+    }
+  });
+
+  socket.on('room-closed', ({ reason }) => {
+    alert(`放映室已关闭 (${reason})`);
+    leaveRoom();
+    window.location.href = '/';
+  });
+}
+
+function connectSocket() {
+  const token = getAuthToken();
+  socket = io({
+    auth: token ? { token } : undefined,
+  });
+  bindSocketEvents();
 }
 
 joinBtn.addEventListener('click', () => {
@@ -772,19 +1230,36 @@ leaveBtn.addEventListener('click', () => {
 chatFormEl.addEventListener('submit', (event) => {
   event.preventDefault();
   const text = (chatInputEl.value || '').trim();
-  if (!text || !joined) {
+  if (!text || !joined || !socket) {
     return;
   }
   socket.emit('chat-message', { text });
   chatInputEl.value = '';
 });
 
+verifyLocalFileBtn.addEventListener('click', () => {
+  verifySelectedLocalFile().catch((err) => {
+    setLocalFileStatus(`校验失败: ${err.message}`);
+  });
+});
+
 watchVideoEl.addEventListener('play', () => {
+  if (playbackLocked) {
+    setPlaybackSuppressed(120);
+    watchVideoEl.pause();
+    return;
+  }
   cancelAutoNextCountdown(false);
   emitPlayback('play');
 });
+
 watchVideoEl.addEventListener('pause', () => emitPlayback('pause'));
+
 watchVideoEl.addEventListener('seeking', () => {
+  if (playbackLocked) {
+    return;
+  }
+
   cancelAutoNextCountdown(false);
   if (seekDebounce) {
     clearTimeout(seekDebounce);
@@ -793,7 +1268,7 @@ watchVideoEl.addEventListener('seeking', () => {
 });
 
 watchVideoEl.addEventListener('ratechange', () => {
-  if (playbackSuppressed) {
+  if (playbackSuppressed || playbackLocked) {
     return;
   }
   cancelAutoNextCountdown(false);
@@ -802,6 +1277,9 @@ watchVideoEl.addEventListener('ratechange', () => {
 });
 
 playbackRateEl.addEventListener('change', () => {
+  if (playbackLocked) {
+    return;
+  }
   cancelAutoNextCountdown(false);
   const rate = Number(playbackRateEl.value || 1);
   setPlaybackSuppressed(180);
@@ -846,7 +1324,7 @@ fullscreenBtn.addEventListener('click', async () => {
 });
 
 watchVideoEl.addEventListener('ended', () => {
-  if (!joined) {
+  if (!joined || playbackLocked) {
     return;
   }
   if (currentEpisodeIndex < episodes.length - 1) {
@@ -862,112 +1340,20 @@ deleteRoomBtn.addEventListener('click', async () => {
   }
 });
 
-socket.on('existing-participants', async ({ participants: list }) => {
-  for (const member of list) {
-    participants.set(member.id, member.name);
-    try {
-      await createPeerConnection(member.id, member.name, true);
-    } catch (err) {
-      console.error('create offer failed', err);
-    }
-  }
-  renderParticipants();
-});
-
-socket.on('participant-joined', ({ id, name }) => {
-  participants.set(id, name);
-  renderParticipants();
-});
-
-socket.on('participant-left', ({ id }) => {
-  participants.delete(id);
-  closePeer(id);
-  renderParticipants();
-});
-
-socket.on('chat-history', ({ messages }) => {
-  chatListEl.innerHTML = '';
-  messages.forEach(appendChatMessage);
-});
-
-socket.on('chat-message', (message) => {
-  appendChatMessage(message);
-});
-
-socket.on('playback-state', (state) => {
-  applyPlaybackState(state, state?.isPlaying ? 'play' : 'pause').catch((err) => {
-    console.error('apply playback state failed', err);
-  });
-});
-
-socket.on('playback-update', (state) => {
-  applyPlaybackState(state, state?.action).catch((err) => {
-    console.error('apply playback update failed', err);
-  });
-});
-
-socket.on('webrtc-offer', async ({ fromId, sdp, name }) => {
-  try {
-    participants.set(fromId, name || '远端用户');
-    renderParticipants();
-
-    const pc = await createPeerConnection(fromId, name, false);
-    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-
-    socket.emit('webrtc-answer', {
-      targetId: fromId,
-      sdp: answer,
-    });
-  } catch (err) {
-    console.error('webrtc-offer handling failed', err);
-  }
-});
-
-socket.on('webrtc-answer', async ({ fromId, sdp }) => {
-  const peer = peers.get(fromId);
-  if (!peer) {
-    return;
-  }
-  try {
-    await peer.pc.setRemoteDescription(new RTCSessionDescription(sdp));
-  } catch (err) {
-    console.error('set answer failed', err);
-  }
-});
-
-socket.on('webrtc-ice-candidate', async ({ fromId, candidate }) => {
-  const peer = peers.get(fromId);
-  if (!peer || !candidate) {
-    return;
-  }
-
-  try {
-    await peer.pc.addIceCandidate(new RTCIceCandidate(candidate));
-  } catch (err) {
-    console.error('add ICE failed', err);
-  }
-});
-
-socket.on('room-closed', ({ reason }) => {
-  alert(`放映室已关闭 (${reason})`);
-  leaveRoom();
-  window.location.href = '/';
-});
-
 window.addEventListener('beforeunload', () => {
   leaveRoom();
+  clearLocalObjectUrl();
 });
 
 setInterval(() => {
   if (!joined) {
     return;
   }
+
   updateLocalEpisodeProgress(currentEpisodeIndex, watchVideoEl.currentTime || 0);
   maybeCorrectPlaybackDrift();
 
-  if (!playbackSuppressed && !watchVideoEl.paused) {
+  if (!playbackSuppressed && !playbackLocked && !watchVideoEl.paused) {
     emitPlayback('timeupdate');
   }
 }, 1000);
@@ -979,12 +1365,34 @@ setInterval(() => {
   renderEpisodeList();
 }, 5000);
 
+async function checkAuth() {
+  try {
+    const result = await apiFetch('/api/auth/me');
+    currentUser = result.user;
+    authInfoEl.textContent = `已登录: ${currentUser.username} (${currentUser.role})`;
+    roomAppEl.classList.remove('hidden');
+    return true;
+  } catch (_err) {
+    currentUser = null;
+    authInfoEl.innerHTML = '未登录，请先前往 <a href="/">主页登录</a>';
+    roomAppEl.classList.add('hidden');
+    return false;
+  }
+}
+
 (async function init() {
+  const authed = await checkAuth();
+  if (!authed) {
+    return;
+  }
+
   try {
     await initRoomInfo();
-    setStatus('请填写昵称后点击加入');
+    connectSocket();
+    setStatus('请点击“加入”进入放映室');
   } catch (err) {
-    setStatus(`加载失败: ${err.message}`);
-    joinBtn.disabled = true;
+    roomTitleEl.textContent = '放映室不存在或已删除';
+    setStatus(err.message);
+    roomAppEl.classList.add('hidden');
   }
 })();

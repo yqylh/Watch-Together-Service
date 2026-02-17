@@ -3,153 +3,69 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>一起看服务</title>
+    <title>登录 - 一起看服务</title>
     <link rel="stylesheet" href="/assets/style.css" />
   </head>
   <body>
-    <div class="container">
-      <div class="header">
-        <h1>一起看服务</h1>
-        <div class="nav">
-          <a href="/">主页</a>
-          <a href="/admin">Root 管理</a>
+    <div class="container page-shell">
+      <div class="header topbar">
+        <div>
+          <p class="eyebrow">Remote Watching Sync</p>
+          <h1>一起看服务</h1>
+        </div>
+        <div class="nav topnav">
+          <a href="/">登录</a>
+          <a href="/upload">上传</a>
+          <a href="/videos">视频与列表</a>
+          <a href="/admin">管理</a>
         </div>
       </div>
 
-      <div class="grid">
-        <div class="card">
-          <h2>本地上传视频</h2>
-          <form id="uploadForm">
-            <div class="form-row">
-              <label for="title">标题</label>
-              <input id="title" name="title" placeholder="可选" />
-            </div>
-            <div class="form-row">
-              <label for="description">描述</label>
-              <textarea id="description" name="description" placeholder="可选"></textarea>
-            </div>
-            <div class="form-row">
-              <label for="expectedHash">期望 SHA-256（可选）</label>
-              <input id="expectedHash" name="expectedHash" placeholder="64 位十六进制" />
-            </div>
-            <div class="form-row">
-              <label for="videoFile">视频文件</label>
-              <input id="videoFile" name="video" type="file" accept="video/*" required />
-              <div id="uploadLimitHint" class="small"></div>
-            </div>
-            <button type="submit">上传</button>
-            <div class="status" id="uploadStatus"></div>
-          </form>
-
-          <hr />
-
-          <h2>导入远程文件源</h2>
-          <form id="remoteImportForm">
-            <div class="form-row">
-              <label for="remoteTitle">标题</label>
-              <input id="remoteTitle" name="title" placeholder="可选" />
-            </div>
-            <div class="form-row">
-              <label for="remoteDescription">描述</label>
-              <textarea id="remoteDescription" name="description" placeholder="可选"></textarea>
-            </div>
-            <div class="form-row">
-              <label for="sourceType">来源类型</label>
-              <select id="sourceType" name="sourceType">
-                <option value="server_path">服务器路径</option>
-                <option value="remote_url">远程 URL</option>
-              </select>
-            </div>
-            <div class="form-row" id="serverPathRow">
-              <label for="serverPath">服务器文件路径</label>
-              <input id="serverPath" name="serverPath" placeholder="例如 /mnt/media/s01e01.mp4" />
-            </div>
-            <div class="form-row hidden" id="remoteUrlRow">
-              <label for="remoteUrl">远程 URL</label>
-              <input id="remoteUrl" name="remoteUrl" placeholder="https://example.com/video.mp4" />
-            </div>
-            <div class="form-row">
-              <label for="remoteOriginalName">原始文件名（可选）</label>
-              <input id="remoteOriginalName" name="originalName" placeholder="例如 episode-01.mp4" />
-            </div>
-            <div class="form-row">
-              <label for="remoteExpectedHash">期望 SHA-256（可选）</label>
-              <input id="remoteExpectedHash" name="expectedHash" placeholder="64 位十六进制" />
-              <div id="remoteLimitHint" class="small"></div>
-            </div>
-            <button type="submit">导入</button>
-            <div class="status" id="remoteStatus"></div>
-          </form>
-
-          <hr />
-
-          <h3>Root 登录</h3>
-          <form id="rootLoginForm">
-            <div class="form-row">
-              <label for="rootUsername">用户名</label>
-              <input id="rootUsername" name="username" value="root" />
-            </div>
-            <div class="form-row">
-              <label for="rootPassword">密码</label>
-              <input id="rootPassword" name="password" type="password" placeholder="root 密码" />
-            </div>
-            <div class="flex">
-              <button type="submit">登录 Root</button>
-              <button type="button" class="secondary" id="rootLogoutBtn">退出</button>
-            </div>
-            <div class="status" id="rootStatus"></div>
-          </form>
+      <div class="columns auth-columns">
+        <div class="card hero-card">
+          <p class="eyebrow">WELCOME</p>
+          <h2>进入你的放映空间</h2>
+          <p class="small">登录后可上传视频、创建多集列表、发起放映室并和成员同步播放。</p>
+          <div class="status" id="authStatus">请登录或注册</div>
+          <div class="user-pill" id="currentUser">未登录</div>
+          <div class="flex" style="margin-top: 12px">
+            <button id="logoutBtn" type="button" class="secondary hidden">退出登录</button>
+            <a id="goUpload" class="button-like hidden" href="/upload">去上传</a>
+            <a id="goVideos" class="button-like hidden" href="/videos">去浏览视频</a>
+          </div>
         </div>
 
-        <div>
-          <div class="card" style="margin-bottom: 16px">
-            <h2>存储情况</h2>
-            <div id="storageInfo" class="small"></div>
-          </div>
+        <div class="card stack-card">
+          <form id="loginForm" class="panel-block">
+            <h3>登录</h3>
+            <div class="form-row">
+              <label for="loginUsername">用户名</label>
+              <input id="loginUsername" name="username" placeholder="例如: alice_01" required />
+            </div>
+            <div class="form-row">
+              <label for="loginPassword">密码</label>
+              <input id="loginPassword" name="password" type="password" required />
+            </div>
+            <button type="submit">登录</button>
+          </form>
 
-          <div class="card" style="margin-bottom: 16px">
-            <h2>支持的视频格式</h2>
-            <div id="supportedFormats" class="small"></div>
-          </div>
-
-          <div class="card" style="margin-bottom: 16px">
-            <h2>创建视频列表（多集）</h2>
-            <form id="playlistForm">
-              <div class="form-row">
-                <label for="playlistName">列表名称</label>
-                <input id="playlistName" name="name" required />
-              </div>
-              <div class="form-row">
-                <label for="playlistDescription">列表描述</label>
-                <textarea id="playlistDescription" name="description"></textarea>
-              </div>
-              <div class="form-row">
-                <label for="playlistVideos">选择集数（按顺序）</label>
-                <select id="playlistVideos" name="episodeVideoIds" multiple size="8"></select>
-              </div>
-              <button type="submit">创建视频列表</button>
-              <div class="status" id="playlistStatus"></div>
-            </form>
-          </div>
-
-          <div class="card" style="margin-bottom: 16px">
-            <h2>所有视频</h2>
-            <div id="videoList" class="video-list"></div>
-          </div>
-
-          <div class="card" style="margin-bottom: 16px">
-            <h2>所有视频列表（多集）</h2>
-            <div id="playlistList" class="video-list"></div>
-          </div>
-
-          <div class="card">
-            <h2>所有放映室</h2>
-            <div id="globalRoomList" class="room-list"></div>
-          </div>
+          <form id="registerForm" class="panel-block">
+            <h3>注册</h3>
+            <div class="form-row">
+              <label for="registerUsername">用户名</label>
+              <input id="registerUsername" name="username" placeholder="3-32位小写字母数字下划线" required />
+            </div>
+            <div class="form-row">
+              <label for="registerPassword">密码</label>
+              <input id="registerPassword" name="password" type="password" required />
+            </div>
+            <button type="submit">注册并登录</button>
+          </form>
         </div>
       </div>
     </div>
 
-    <script src="/assets/app.js"></script>
+    <script src="/assets/common.js"></script>
+    <script src="/assets/login.js"></script>
   </body>
 </html>

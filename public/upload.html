@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>上传视频 - 一起看服务</title>
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body>
+    <div class="container page-shell">
+      <div class="header topbar">
+        <div>
+          <p class="eyebrow">UPLOAD CENTER</p>
+          <h1>上传视频</h1>
+          <p class="small" id="authStatus">鉴权中...</p>
+        </div>
+        <div class="nav topnav">
+          <a href="/">登录</a>
+          <a href="/upload">上传</a>
+          <a href="/videos">视频与列表</a>
+          <a href="/admin">管理</a>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom: 16px">
+        <div class="flex">
+          <div class="user-pill" id="currentUser">未登录</div>
+          <button id="logoutBtn" class="secondary" type="button">退出登录</button>
+        </div>
+      </div>
+
+      <div class="grid two-col">
+        <div class="card">
+          <h2>上传任务</h2>
+          <form id="uploadForm">
+            <div class="form-row">
+              <label for="uploadMode">上传模式</label>
+              <select id="uploadMode" name="uploadMode" required>
+                <option value="cloud" selected>云端托管（上传文件）</option>
+                <option value="local_file">本地模式（前端计算 hash）</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label for="title">标题</label>
+              <input id="title" name="title" placeholder="可选" />
+            </div>
+            <div class="form-row">
+              <label for="description">描述</label>
+              <textarea id="description" name="description" placeholder="可选"></textarea>
+            </div>
+            <div class="form-row">
+              <label for="videoFile" id="videoFileLabel">视频文件</label>
+              <input id="videoFile" name="video" type="file" accept="video/*" required />
+              <div id="uploadModeHint" class="small"></div>
+            </div>
+            <button type="submit">提交上传</button>
+            <div class="status" id="uploadStatus"></div>
+          </form>
+        </div>
+
+        <div>
+          <div class="card" style="margin-bottom: 16px">
+            <h2>存储状态</h2>
+            <div id="storageInfo" class="small"></div>
+          </div>
+          <div class="card">
+            <h2>支持格式</h2>
+            <div id="supportedFormats" class="small"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="/assets/common.js"></script>
+    <script src="/assets/upload.js"></script>
+  </body>
+</html>

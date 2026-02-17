@@ -5,31 +5,23 @@ const videoPlayerEl = document.getElementById('videoPlayer');
 const videoMetaEl = document.getElementById('videoMeta');
 const videoLinkEl = document.getElementById('videoLink');
 const roomListEl = document.getElementById('roomList');
+const authInfoEl = document.getElementById('authInfo');
+const videoContentEl = document.getElementById('videoContent');
+const roomListCardEl = document.getElementById('roomListCard');
 
 const createRoomForm = document.getElementById('createRoomForm');
 const roomStatusEl = document.getElementById('roomStatus');
 
-const ROOT_TOKEN_KEY = 'root_token';
+const AUTH_TOKEN_KEY = 'auth_token';
+let currentUser = null;
 
-function getRootToken() {
-  return localStorage.getItem(ROOT_TOKEN_KEY) || '';
-}
-
-function creatorTokenKey(roomId) {
-  return `room_creator_token_${roomId}`;
-}
-
-function getCreatorToken(roomId) {
-  return localStorage.getItem(creatorTokenKey(roomId)) || '';
-}
-
-function setCreatorToken(roomId, token) {
-  localStorage.setItem(creatorTokenKey(roomId), token);
+function getAuthToken() {
+  return localStorage.getItem(AUTH_TOKEN_KEY) || '';
 }
 
 async function apiFetch(url, options = {}) {
   const headers = new Headers(options.headers || {});
-  const token = getRootToken();
+  const token = getAuthToken();
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
   }
@@ -62,17 +54,15 @@ function formatSeconds(value) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-async function deleteRoom(roomId) {
-  const creatorToken = getCreatorToken(roomId);
-  const headers = {};
-  if (creatorToken) {
-    headers['x-creator-token'] = creatorToken;
+function canDeleteRoom(room) {
+  if (!currentUser) {
+    return false;
   }
+  return currentUser.role === 'root' || room.createdByUserId === currentUser.id;
+}
 
-  await apiFetch(`/api/rooms/${roomId}`, {
-    method: 'DELETE',
-    headers,
-  });
+async function deleteRoom(roomId) {
+  await apiFetch(`/api/rooms/${roomId}`, { method: 'DELETE' });
 }
 
 function renderRoomRow(room) {
@@ -85,12 +75,12 @@ function renderRoomRow(room) {
 
   const info = document.createElement('div');
   info.className = 'small';
-  info.textContent = `创建者: ${room.creatorName} | 在线: ${room.memberCount || 0} | 创建时间: ${formatDate(room.createdAt)} | 续播: 第 ${Number(room.latestEpisodeIndex || 0) + 1} 集 ${formatSeconds(room.latestCurrentTime || 0)} | 累计观看: ${formatSeconds(room.totalWatchedSeconds || 0)}`;
+  info.textContent = `模式: ${room.roomMode || 'cloud'} | 创建者: ${room.creatorName} | 在线: ${room.memberCount || 0} | 创建时间: ${formatDate(room.createdAt)} | 续播: 第 ${Number(room.latestEpisodeIndex || 0) + 1} 集 ${formatSeconds(room.latestCurrentTime || 0)} | 累计观看: ${formatSeconds(room.totalWatchedSeconds || 0)}`;
 
   row.appendChild(link);
   row.appendChild(info);
 
-  if (getCreatorToken(room.id) || getRootToken()) {
+  if (canDeleteRoom(room)) {
     const action = document.createElement('div');
     action.className = 'flex';
 
@@ -118,8 +108,19 @@ async function loadVideo() {
   const video = data.video;
 
   videoTitleEl.textContent = video.title;
-  videoPlayerEl.src = video.mediaUrl;
-  videoMetaEl.textContent = `上传时间: ${formatDate(video.createdAt)} | 文件: ${video.originalName} | 本地: ${video.localAvailable ? '有' : '无'} | OSS: ${video.storedInOss ? '有' : '无'}`;
+  if (video.mediaUrl) {
+    videoPlayerEl.classList.remove('hidden');
+    videoPlayerEl.src = video.mediaUrl;
+  } else {
+    videoPlayerEl.classList.add('hidden');
+    videoPlayerEl.removeAttribute('src');
+    videoPlayerEl.load();
+  }
+  videoMetaEl.textContent = `上传时间: ${formatDate(video.createdAt)} | 文件: ${video.originalName} | 来源: ${video.sourceType} | 本地: ${video.localAvailable ? '有' : '无'} | OSS: ${video.storedInOss ? '有' : '无'}`;
+  const cloudModeOption = document.querySelector('#roomMode option[value="cloud"]');
+  if (cloudModeOption) {
+    cloudModeOption.disabled = !video.mediaUrl;
+  }
   videoLinkEl.innerHTML = `唯一链接: <a href="${video.watchUrl}">${location.origin}${video.watchUrl}</a>`;
 
   roomListEl.innerHTML = '';
@@ -136,6 +137,11 @@ createRoomForm.addEventListener('submit', async (event) => {
   roomStatusEl.textContent = '创建中...';
 
   const formData = new FormData(createRoomForm);
+  const roomMode = String(formData.get('roomMode') || '').trim();
+  if (!roomMode) {
+    roomStatusEl.textContent = '请选择播放模式';
+    return;
+  }
 
   try {
     const result = await apiFetch(`/api/videos/${videoId}/rooms`, {
@@ -145,18 +151,40 @@ createRoomForm.addEventListener('submit', async (event) => {
       },
       body: JSON.stringify({
         roomName: formData.get('roomName') || '',
-        creatorName: formData.get('creatorName') || '匿名用户',
+        roomMode,
       }),
     });
 
-    setCreatorToken(result.room.id, result.creatorToken);
-    location.href = `/rooms/${result.room.id}?name=${encodeURIComponent(formData.get('creatorName') || '')}`;
+    location.href = `/rooms/${result.room.id}`;
   } catch (err) {
     roomStatusEl.textContent = `创建失败: ${err.message}`;
   }
 });
 
+async function checkAuth() {
+  try {
+    const result = await apiFetch('/api/auth/me');
+    currentUser = result.user;
+    authInfoEl.textContent = `已登录: ${currentUser.username} (${currentUser.role})`;
+    return true;
+  } catch (_err) {
+    currentUser = null;
+    authInfoEl.innerHTML = '未登录，请先前往 <a href="/">主页登录</a>';
+    videoContentEl.classList.add('hidden');
+    roomListCardEl.classList.add('hidden');
+    return false;
+  }
+}
+
 (async function init() {
+  const authed = await checkAuth();
+  if (!authed) {
+    return;
+  }
+
+  videoContentEl.classList.remove('hidden');
+  roomListCardEl.classList.remove('hidden');
+
   try {
     await loadVideo();
   } catch (err) {

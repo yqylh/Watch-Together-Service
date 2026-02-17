@@ -24,6 +24,16 @@ function ensureColumn(tableName, columnName, columnDef) {
 }
 
 db.exec(`
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'user',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_login_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS videos (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
@@ -91,6 +101,7 @@ CREATE TABLE IF NOT EXISTS video_jobs (
   FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE SET NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_rooms_video_id ON rooms(video_id);
 CREATE INDEX IF NOT EXISTS idx_playlist_items_playlist_id ON playlist_items(playlist_id);
 CREATE INDEX IF NOT EXISTS idx_playlist_items_video_id ON playlist_items(video_id);
@@ -115,13 +126,41 @@ ensureColumn('rooms', 'last_playback_rate', 'REAL DEFAULT 1');
 ensureColumn('rooms', 'last_is_playing', 'INTEGER DEFAULT 0');
 ensureColumn('rooms', 'last_updated_at', "TEXT DEFAULT ''");
 ensureColumn('rooms', 'total_watched_seconds', 'REAL DEFAULT 0');
+ensureColumn('rooms', 'created_by_user_id', 'TEXT DEFAULT NULL');
+ensureColumn('rooms', 'room_mode', "TEXT DEFAULT 'cloud'");
 
 db.exec(`
 CREATE INDEX IF NOT EXISTS idx_videos_hash ON videos(hash);
 CREATE INDEX IF NOT EXISTS idx_videos_filename ON videos(filename);
 CREATE INDEX IF NOT EXISTS idx_videos_last_accessed_at ON videos(last_accessed_at);
 CREATE INDEX IF NOT EXISTS idx_rooms_playlist_id ON rooms(playlist_id);
+CREATE INDEX IF NOT EXISTS idx_rooms_created_by_user_id ON rooms(created_by_user_id);
 `);
+
+const insertUserStmt = db.prepare(`
+  INSERT INTO users (
+    id,
+    username,
+    password_hash,
+    role,
+    created_at,
+    updated_at,
+    last_login_at
+  ) VALUES (
+    @id,
+    @username,
+    @passwordHash,
+    @role,
+    @createdAt,
+    @updatedAt,
+    @lastLoginAt
+  )
+`);
+
+const getUserByIdStmt = db.prepare('SELECT * FROM users WHERE id = ?');
+const getUserByUsernameStmt = db.prepare('SELECT * FROM users WHERE username = ?');
+const countUsersStmt = db.prepare('SELECT COUNT(1) AS total FROM users');
+const updateUserLastLoginStmt = db.prepare('UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?');
 
 const insertVideoStmt = db.prepare(`
   INSERT INTO videos (
@@ -186,6 +225,8 @@ const insertRoomStmt = db.prepare(`
     name,
     creator_name,
     creator_token,
+    created_by_user_id,
+    room_mode,
     created_at
   ) VALUES (
     @id,
@@ -201,6 +242,8 @@ const insertRoomStmt = db.prepare(`
     @name,
     @creatorName,
     @creatorToken,
+    @createdByUserId,
+    @roomMode,
     @createdAt
   )
 `);
@@ -217,6 +260,7 @@ const listPlaylistsStmt = db.prepare(`
   GROUP BY playlists.id
   ORDER BY datetime(playlists.created_at) DESC
 `);
+
 const listPlaylistEpisodesStmt = db.prepare(`
   SELECT
     playlist_items.id,
@@ -250,10 +294,12 @@ const getRoomWithSourceStmt = db.prepare(`
   SELECT
     rooms.*,
     videos.title AS video_title,
-    playlists.name AS playlist_name
+    playlists.name AS playlist_name,
+    users.username AS creator_username
   FROM rooms
   JOIN videos ON videos.id = rooms.video_id
   LEFT JOIN playlists ON playlists.id = rooms.playlist_id
+  LEFT JOIN users ON users.id = rooms.created_by_user_id
   WHERE rooms.id = ?
 `);
 
@@ -263,10 +309,12 @@ const listRoomsByVideoStmt = db.prepare(`
   SELECT
     rooms.*,
     videos.title AS video_title,
-    playlists.name AS playlist_name
+    playlists.name AS playlist_name,
+    users.username AS creator_username
   FROM rooms
   JOIN videos ON videos.id = rooms.video_id
   LEFT JOIN playlists ON playlists.id = rooms.playlist_id
+  LEFT JOIN users ON users.id = rooms.created_by_user_id
   WHERE rooms.video_id = ?
   ORDER BY datetime(rooms.created_at) DESC
 `);
@@ -275,10 +323,12 @@ const listRoomsByPlaylistStmt = db.prepare(`
   SELECT
     rooms.*,
     videos.title AS video_title,
-    playlists.name AS playlist_name
+    playlists.name AS playlist_name,
+    users.username AS creator_username
   FROM rooms
   JOIN videos ON videos.id = rooms.video_id
   LEFT JOIN playlists ON playlists.id = rooms.playlist_id
+  LEFT JOIN users ON users.id = rooms.created_by_user_id
   WHERE rooms.playlist_id = ?
   ORDER BY datetime(rooms.created_at) DESC
 `);
@@ -287,10 +337,12 @@ const listAllRoomsStmt = db.prepare(`
   SELECT
     rooms.*,
     videos.title AS video_title,
-    playlists.name AS playlist_name
+    playlists.name AS playlist_name,
+    users.username AS creator_username
   FROM rooms
   JOIN videos ON videos.id = rooms.video_id
   LEFT JOIN playlists ON playlists.id = rooms.playlist_id
+  LEFT JOIN users ON users.id = rooms.created_by_user_id
   ORDER BY datetime(rooms.created_at) DESC
 `);
 
@@ -494,6 +546,38 @@ const updateRoomProgressTx = db.transaction((payload) => {
   }
 });
 
+function countUsers() {
+  const row = countUsersStmt.get() || { total: 0 };
+  return Number(row.total || 0);
+}
+
+function createUser(user) {
+  const now = user.createdAt;
+  const row = {
+    id: user.id,
+    username: String(user.username || '').trim(),
+    passwordHash: user.passwordHash,
+    role: user.role || 'user',
+    createdAt: now,
+    updatedAt: user.updatedAt || now,
+    lastLoginAt: user.lastLoginAt || now,
+  };
+  insertUserStmt.run(row);
+  return getUserById(row.id);
+}
+
+function getUserById(id) {
+  return getUserByIdStmt.get(id) || null;
+}
+
+function getUserByUsername(username) {
+  return getUserByUsernameStmt.get(String(username || '').trim()) || null;
+}
+
+function touchUserLastLogin(userId, at) {
+  updateUserLastLoginStmt.run(at, at, userId);
+}
+
 function createVideo(video) {
   const row = {
     ...video,
@@ -554,6 +638,10 @@ function createRoom(room) {
     lastIsPlaying: room.lastIsPlaying ? 1 : 0,
     lastUpdatedAt: room.lastUpdatedAt || room.createdAt,
     totalWatchedSeconds: Number(room.totalWatchedSeconds || 0),
+    creatorName: room.creatorName || 'legacy',
+    creatorToken: room.creatorToken || `legacy-${room.id}`,
+    createdByUserId: room.createdByUserId || null,
+    roomMode: room.roomMode || 'cloud',
   };
 
   insertRoomStmt.run(row);
@@ -723,26 +811,34 @@ function cleanupOldVideoJobs(beforeIso) {
   return cleanupOldVideoJobsStmt.run(beforeIso).changes;
 }
 
-function isRoomCreator(roomId, creatorToken) {
-  if (!creatorToken) {
+function isRoomOwner(roomId, userId) {
+  if (!userId) {
     return false;
   }
   const room = getRoom(roomId);
-  if (!room) {
+  if (!room || !room.created_by_user_id) {
     return false;
   }
-  return room.creator_token === creatorToken;
+  return room.created_by_user_id === userId;
 }
 
 module.exports = {
+  countUsers,
+  createUser,
+  getUserById,
+  getUserByUsername,
+  touchUserLastLogin,
+
   createVideo,
   getVideo,
   getVideoByHash,
   listVideos,
+
   createPlaylist,
   getPlaylist,
   listPlaylists,
   listPlaylistEpisodes,
+
   createRoom,
   getRoom,
   getRoomWithSource,
@@ -750,9 +846,11 @@ module.exports = {
   listRoomsByVideo,
   listRoomsByPlaylist,
   listAllRooms,
+
   getRoomPlaybackState,
   listRoomEpisodeProgress,
   updateRoomPlaybackState,
+
   touchVideoAccess,
   touchVideosByFilename,
   markLocalUnavailableByFilename,
@@ -760,11 +858,13 @@ module.exports = {
   markVideosStoredInOssByHash,
   listLocalEvictionCandidates,
   listLocalPoolFiles,
+
   createVideoJob,
   updateVideoJob,
   getVideoJob,
   listVideoJobs,
   countVideoJobs,
   cleanupOldVideoJobs,
-  isRoomCreator,
+
+  isRoomOwner,
 };

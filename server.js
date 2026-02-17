@@ -4,8 +4,12 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const http = require('http');
 const path = require('path');
-const { createHash } = require('crypto');
-const { Readable } = require('stream');
+const {
+  createHash,
+  randomBytes,
+  scryptSync,
+  timingSafeEqual,
+} = require('crypto');
 const { spawn } = require('child_process');
 const express = require('express');
 const cors = require('cors');
@@ -15,6 +19,11 @@ const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const { Server } = require('socket.io');
 const {
+  countUsers,
+  createUser,
+  getUserById,
+  getUserByUsername,
+  touchUserLastLogin,
   createVideo,
   getVideo,
   getVideoByHash,
@@ -46,7 +55,7 @@ const {
   listVideoJobs,
   countVideoJobs,
   cleanupOldVideoJobs,
-  isRoomCreator,
+  isRoomOwner,
 } = require('./db');
 
 const app = express();
@@ -60,10 +69,7 @@ const io = new Server(server, {
 
 const port = Number(process.env.PORT || 3000);
 const jwtSecret = process.env.JWT_SECRET || 'replace-this-secret';
-const rootUsername = process.env.ROOT_USERNAME || 'root';
-const rootPassword = process.env.ROOT_PASSWORD || 'root123';
-const remoteSourceRoot = (process.env.REMOTE_SOURCE_ROOT || '').trim();
-const maxUploadSizeBytes = Number(process.env.MAX_UPLOAD_SIZE_BYTES || 1024 * 1024 * 1024);
+const authTokenCookieName = 'auth_token';
 
 const poolDir = path.join(__dirname, process.env.PLAY_POOL_DIR || 'playback_pool');
 const tempDir = path.join(__dirname, process.env.TEMP_UPLOAD_DIR || 'uploads_tmp');
@@ -125,9 +131,6 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: {
-    fileSize: maxUploadSizeBytes,
-  },
   fileFilter: (_req, file, cb) => {
     if (!isSupportedFormat(file.originalname, file.mimetype)) {
       cb(new Error('不支持该视频格式，请查看 /api/supported-formats'));
@@ -148,6 +151,7 @@ const roomMessages = new Map();
 const roomEpisodes = new Map();
 const activeMediaReads = new Map();
 const localFileLocks = new Map();
+const roomLocalVerification = new Map();
 
 function nowIso() {
   return new Date().toISOString();
@@ -236,13 +240,13 @@ function normalizeHash(hash) {
   return String(hash).trim().toLowerCase();
 }
 
-function validateHash(hash) {
+function validateRequiredHash(hash, fieldName = 'contentHash') {
   const normalized = normalizeHash(hash);
   if (!normalized) {
-    return null;
+    throw new Error(`${fieldName} is required`);
   }
   if (!/^[a-f0-9]{64}$/.test(normalized)) {
-    throw new Error('expectedHash 必须是 64 位十六进制 SHA-256');
+    throw new Error(`${fieldName} must be a 64-char hex SHA-256`);
   }
   return normalized;
 }
@@ -268,34 +272,163 @@ function assertSupportedFormat(fileName, mimeType) {
   }
 }
 
-function parseRootToken(req) {
-  const authHeader = req.headers.authorization;
-  const bearerToken = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  const cookieToken = req.cookies.root_token;
-  const tokens = [bearerToken, cookieToken].filter(Boolean);
-
-  for (const token of tokens) {
-    try {
-      const payload = jwt.verify(token, jwtSecret);
-      if (payload.role === 'root') {
-        return payload;
-      }
-    } catch (_err) {
-      // try next
-    }
+function serializeUser(user) {
+  if (!user) {
+    return null;
   }
-
-  return null;
+  return {
+    id: user.id,
+    username: user.username,
+    role: user.role,
+    createdAt: user.created_at,
+    updatedAt: user.updated_at,
+    lastLoginAt: user.last_login_at,
+  };
 }
 
-function authRoot(req, res, next) {
-  const payload = parseRootToken(req);
-  if (!payload) {
-    res.status(401).json({ error: 'Root authentication required' });
+function issueAuthToken(user) {
+  return jwt.sign({
+    uid: user.id,
+    username: user.username,
+    role: user.role || 'user',
+    ts: Date.now(),
+  }, jwtSecret, { expiresIn: '30d' });
+}
+
+function parseAuthToken(req) {
+  const authHeader = req.headers.authorization;
+  const bearerToken = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const cookieToken = req.cookies[authTokenCookieName];
+  return bearerToken || cookieToken || '';
+}
+
+function authRequired(req, res, next) {
+  const token = parseAuthToken(req);
+  if (!token) {
+    res.status(401).json({ error: 'Authentication required' });
     return;
   }
-  req.rootUser = payload;
+
+  let payload;
+  try {
+    payload = jwt.verify(token, jwtSecret);
+  } catch (_err) {
+    res.status(401).json({ error: 'Invalid authentication token' });
+    return;
+  }
+
+  const user = getUserById(payload.uid);
+  if (!user) {
+    res.status(401).json({ error: 'User not found' });
+    return;
+  }
+
+  req.authUser = serializeUser(user);
+  req.authToken = token;
   next();
+}
+
+function authRootRequired(req, res, next) {
+  if (!req.authUser) {
+    res.status(401).json({ error: 'Authentication required' });
+    return;
+  }
+  if (req.authUser.role !== 'root') {
+    res.status(403).json({ error: 'Root permission required' });
+    return;
+  }
+  next();
+}
+
+function parseCookiesHeader(rawCookie) {
+  const parsed = {};
+  const source = String(rawCookie || '');
+  if (!source) {
+    return parsed;
+  }
+  source.split(';').forEach((part) => {
+    const [key, ...rest] = part.split('=');
+    if (!key) {
+      return;
+    }
+    parsed[key.trim()] = decodeURIComponent(rest.join('=').trim());
+  });
+  return parsed;
+}
+
+function getSocketAuthToken(socket) {
+  const authToken = socket.handshake?.auth?.token;
+  if (authToken) {
+    return String(authToken);
+  }
+  const cookies = parseCookiesHeader(socket.handshake?.headers?.cookie);
+  return cookies[authTokenCookieName] || '';
+}
+
+function ensureRoomVerification(roomId) {
+  if (!roomLocalVerification.has(roomId)) {
+    roomLocalVerification.set(roomId, new Map());
+  }
+  return roomLocalVerification.get(roomId);
+}
+
+function setRoomVerification(roomId, userId, episodeIndex, contentHash) {
+  const byUser = ensureRoomVerification(roomId);
+  if (!byUser.has(userId)) {
+    byUser.set(userId, new Map());
+  }
+  byUser.get(userId).set(Number(episodeIndex || 0), normalizeHash(contentHash));
+}
+
+function isRoomEpisodeVerified(roomId, userId, episodeIndex, contentHash) {
+  const byUser = roomLocalVerification.get(roomId);
+  if (!byUser) {
+    return false;
+  }
+  const episodes = byUser.get(userId);
+  if (!episodes) {
+    return false;
+  }
+  const savedHash = episodes.get(Number(episodeIndex || 0));
+  return Boolean(savedHash && savedHash === normalizeHash(contentHash));
+}
+
+function clearRoomVerificationByUser(roomId, userId) {
+  const byUser = roomLocalVerification.get(roomId);
+  if (!byUser) {
+    return;
+  }
+  byUser.delete(userId);
+  if (byUser.size === 0) {
+    roomLocalVerification.delete(roomId);
+  }
+}
+
+function buildLocalFileRequiredPayload(roomId, roomStateOverride) {
+  const room = getRoomWithSource(roomId);
+  if (!room || room.room_mode !== 'local_file') {
+    return null;
+  }
+
+  const episodes = getRoomEpisodes(roomId, room);
+  if (!episodes.length) {
+    return null;
+  }
+
+  const state = roomStateOverride || roomPlayback.get(roomId) || getRoomPlaybackState(roomId) || getDefaultRoomState(room);
+  const index = Math.max(0, Math.min(Number(state.episodeIndex || 0), episodes.length - 1));
+  const episode = episodes[index];
+  if (!episode) {
+    return null;
+  }
+
+  return {
+    roomId,
+    episodeIndex: index,
+    videoId: episode.videoId,
+    title: episode.title,
+    contentHash: normalizeHash(episode.contentHash || ''),
+  };
 }
 
 function serializeRoom(room) {
@@ -304,9 +437,11 @@ function serializeRoom(room) {
     id: room.id,
     videoId: room.video_id,
     playlistId: room.playlist_id || null,
+    roomMode: room.room_mode || 'cloud',
+    createdByUserId: room.created_by_user_id || null,
     startEpisodeIndex: Number(room.start_episode_index || 0),
     name: room.name,
-    creatorName: room.creator_name,
+    creatorName: room.creator_username || room.creator_name,
     createdAt: room.created_at,
     videoTitle: room.video_title,
     playlistName: room.playlist_name || null,
@@ -322,6 +457,7 @@ function serializeRoom(room) {
 
 function serializeVideo(video) {
   const rooms = listRoomsByVideo(video.id).map(serializeRoom);
+  const hasCloudMedia = video.source_type !== 'local_hash';
   return {
     id: video.id,
     title: video.title,
@@ -336,7 +472,7 @@ function serializeVideo(video) {
     storedInOss: Boolean(video.stored_in_oss),
     createdAt: video.created_at,
     watchUrl: `/videos/${video.id}`,
-    mediaUrl: `/media/${video.id}`,
+    mediaUrl: hasCloudMedia ? `/media/${video.id}` : null,
     rooms,
   };
 }
@@ -367,6 +503,7 @@ function serializePlaylistEpisode(item) {
     ? item.title_override.trim()
     : item.video_title;
 
+  const hasCloudMedia = item.video_source_type !== 'local_hash';
   return {
     id: item.id,
     playlistId: item.playlist_id,
@@ -374,10 +511,11 @@ function serializePlaylistEpisode(item) {
     episodeIndex: item.episode_index,
     title,
     originalTitle: item.video_title,
-    mediaUrl: `/media/${item.video_id}`,
+    mediaUrl: hasCloudMedia ? `/media/${item.video_id}` : null,
     watchUrl: `/videos/${item.video_id}`,
     mimeType: item.video_mime_type,
     size: item.video_size,
+    sourceType: item.video_source_type || 'local_upload',
     contentHash: item.video_hash || '',
     localAvailable: Boolean(item.video_local_available),
     storedInOss: Boolean(item.video_stored_in_oss),
@@ -425,10 +563,11 @@ function buildRoomPlaylist(room) {
       episodeIndex: 0,
       title: video.title,
       originalTitle: video.title,
-      mediaUrl: `/media/${video.id}`,
+      mediaUrl: video.source_type === 'local_hash' ? null : `/media/${video.id}`,
       watchUrl: `/videos/${video.id}`,
       mimeType: video.mime_type,
       size: video.size,
+      sourceType: video.source_type || 'local_upload',
       contentHash: video.hash || '',
       localAvailable: Boolean(video.local_available),
       storedInOss: Boolean(video.stored_in_oss),
@@ -490,10 +629,15 @@ function removeSocketFromRoom(socket) {
 
   const members = roomMembers.get(roomId);
   if (members) {
+    const currentUserId = socket.data.userId;
     members.delete(socket.id);
+    const sameUserStillOnline = [...members.values()].some((member) => member.userId === currentUserId);
+    if (!sameUserStillOnline) {
+      clearRoomVerificationByUser(roomId, currentUserId);
+    }
     socket.to(roomId).emit('participant-left', {
       id: socket.id,
-      name: socket.data.displayName,
+      name: socket.data.username,
     });
 
     if (members.size === 0) {
@@ -501,12 +645,14 @@ function removeSocketFromRoom(socket) {
       roomMessages.delete(roomId);
       roomPlayback.delete(roomId);
       roomEpisodes.delete(roomId);
+      roomLocalVerification.delete(roomId);
     }
   }
 
   socket.leave(roomId);
   socket.data.roomId = null;
-  socket.data.displayName = null;
+  socket.data.username = null;
+  socket.data.userId = null;
 }
 
 function closeRoom(roomId, reason) {
@@ -526,7 +672,8 @@ function closeRoom(roomId, reason) {
       }
       socket.leave(roomId);
       socket.data.roomId = null;
-      socket.data.displayName = null;
+      socket.data.username = null;
+      socket.data.userId = null;
     }
   }
 
@@ -534,6 +681,7 @@ function closeRoom(roomId, reason) {
   roomPlayback.delete(roomId);
   roomMessages.delete(roomId);
   roomEpisodes.delete(roomId);
+  roomLocalVerification.delete(roomId);
   return deleteRoom(roomId);
 }
 
@@ -764,6 +912,22 @@ function parseBoundedInt(value, fallback, min, max) {
     return fallback;
   }
   return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
+function parseRoomMode(value) {
+  const mode = String(value || '').trim();
+  if (!mode || !['cloud', 'local_file'].includes(mode)) {
+    throw new Error('roomMode 必须是 cloud 或 local_file');
+  }
+  return mode;
+}
+
+function parseUploadMode(value) {
+  const mode = String(value || '').trim();
+  if (!mode || !['cloud', 'local_file'].includes(mode)) {
+    throw new Error('uploadMode 必须是 cloud 或 local_file');
+  }
+  return mode;
 }
 
 function incrementActiveRead(videoId) {
@@ -1084,10 +1248,6 @@ async function getStorageSnapshot() {
       availableBytes: Math.max(0, playPoolMaxBytes - poolUsage),
       fileCount: poolFiles.length,
     },
-    uploadLimit: {
-      maxBytes: maxUploadSizeBytes,
-      maxLabel: formatBytes(maxUploadSizeBytes),
-    },
     disk,
     oss: {
       enabled: Boolean(ossClient),
@@ -1183,22 +1343,6 @@ async function storeVideoRecord({
   return video;
 }
 
-function resolveServerPath(inputPath) {
-  const raw = (inputPath || '').trim();
-  if (!raw) {
-    throw new Error('serverPath 不能为空');
-  }
-
-  const root = remoteSourceRoot ? path.resolve(remoteSourceRoot) : null;
-  const resolved = path.resolve(root ? path.join(root, raw) : raw);
-
-  if (root && !(resolved === root || resolved.startsWith(`${root}${path.sep}`))) {
-    throw new Error('serverPath 超出 REMOTE_SOURCE_ROOT 允许范围');
-  }
-
-  return resolved;
-}
-
 function isPathInDirectory(targetPath, baseDir) {
   const resolvedTarget = path.resolve(targetPath);
   const resolvedBase = path.resolve(baseDir);
@@ -1224,13 +1368,9 @@ async function processLocalUploadJob(jobId, payload) {
       error: '',
     });
 
-    const expectedHash = validateHash(payload.expectedHash || '');
     assertSupportedFormat(payload.file.originalname, payload.file.mimetype);
 
     const sourceHashResult = await hashFile(sourcePath);
-    if (expectedHash && expectedHash !== sourceHashResult.hash) {
-      throw new Error(`hash 校验失败，期望 ${expectedHash}，实际 ${sourceHashResult.hash}`);
-    }
 
     const existing = getVideoByHash(sourceHashResult.hash);
     let preparedName = payload.file.filename;
@@ -1304,178 +1444,55 @@ async function processLocalUploadJob(jobId, payload) {
   }
 }
 
-async function processRemoteImportJob(jobId, payload) {
-  let stagedPath = '';
-  let workingPath = '';
+function buildLocalHashPlaceholderName(contentHash) {
+  const prefix = String(contentHash || '').slice(0, 12) || uuidv4();
+  return `local-hash-${prefix}.mp4`;
+}
+
+async function processLocalHashOnlyJob(jobId, payload) {
   try {
-    const {
-      title,
-      description,
-      sourceType,
-      serverPath,
-      remoteUrl,
+    const contentHash = validateRequiredHash(payload?.contentHash, 'contentHash');
+    const localFileName = String(payload?.localFileName || '').trim();
+    const placeholderName = buildLocalHashPlaceholderName(contentHash);
+    const originalName = localFileName || placeholderName;
+
+    updateVideoJobState(jobId, {
+      status: 'processing',
+      stage: 'registering_local_hash',
+      message: '注册本地模式视频 hash',
+      progress: 0.6,
+      error: '',
+    });
+
+    const existing = getVideoByHash(contentHash);
+    const video = existing || createVideo({
+      id: uuidv4(),
+      title: (payload?.title || '').trim() || `本地模式视频 ${contentHash.slice(0, 8)}`,
+      description: (payload?.description || '').trim(),
+      filename: placeholderName,
       originalName,
-      expectedHash,
-    } = payload || {};
-
-    if (!sourceType || !['server_path', 'remote_url'].includes(sourceType)) {
-      throw new Error('sourceType 必须是 server_path 或 remote_url');
-    }
-
-    const expected = validateHash(expectedHash || '');
-    let readStream;
-    let sourceValue;
-    let inferredName;
-    let inferredMime = '';
-
-    if (sourceType === 'server_path') {
-      updateVideoJobState(jobId, {
-        status: 'processing',
-        stage: 'reading_server_file',
-        message: '读取服务器文件中',
-        progress: 0.15,
-      });
-
-      const absSourcePath = resolveServerPath(serverPath);
-      const stat = await fsp.stat(absSourcePath).catch(() => null);
-      if (!stat || !stat.isFile()) {
-        throw new Error('serverPath 文件不存在');
-      }
-      if (maxUploadSizeBytes > 0 && stat.size > maxUploadSizeBytes) {
-        throw new Error(`源文件超过大小限制 ${formatBytes(maxUploadSizeBytes)}`);
-      }
-
-      sourceValue = absSourcePath;
-      inferredName = path.basename(absSourcePath);
-      inferredMime = inferMimeFromExt(getExtension(inferredName));
-      assertSupportedFormat(inferredName, inferredMime);
-      readStream = fs.createReadStream(absSourcePath);
-    } else {
-      updateVideoJobState(jobId, {
-        status: 'processing',
-        stage: 'downloading_remote',
-        message: '拉取远程视频中',
-        progress: 0.15,
-      });
-
-      const remote = (remoteUrl || '').trim();
-      if (!remote) {
-        throw new Error('remoteUrl 不能为空');
-      }
-
-      let response;
-      try {
-        response = await fetch(remote);
-      } catch (err) {
-        throw new Error(`拉取 remoteUrl 失败: ${err.message}`);
-      }
-
-      if (!response.ok || !response.body) {
-        throw new Error(`拉取 remoteUrl 失败: HTTP ${response.status}`);
-      }
-
-      const contentLength = Number(response.headers.get('content-length') || 0);
-      if (maxUploadSizeBytes > 0 && Number.isFinite(contentLength) && contentLength > maxUploadSizeBytes) {
-        throw new Error(`远程文件超过大小限制 ${formatBytes(maxUploadSizeBytes)}`);
-      }
-
-      sourceValue = remote;
-      try {
-        const parsed = new URL(remote);
-        inferredName = path.basename(parsed.pathname) || 'remote-video';
-      } catch (_err) {
-        inferredName = 'remote-video';
-      }
-
-      inferredMime = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-      assertSupportedFormat(inferredName, inferredMime);
-      readStream = Readable.fromWeb(response.body);
-    }
-
-    updateVideoJobState(jobId, {
-      status: 'processing',
-      stage: 'hashing',
-      message: '边下载边做 hash 校验',
-      progress: 0.35,
-    });
-
-    const finalOriginalName = (originalName || '').trim() || inferredName;
-    const ext = getExtension(finalOriginalName) || getExtension(inferredName) || '.mp4';
-    const finalMime = inferredMime || inferMimeFromExt(ext) || 'video/mp4';
-    assertSupportedFormat(finalOriginalName, finalMime);
-
-    const stagedFilename = `${uuidv4()}${ext}`;
-    stagedPath = path.join(tempDir, stagedFilename);
-    workingPath = stagedPath;
-
-    const sourceHashResult = await copyAndHash(readStream, stagedPath, { maxBytes: maxUploadSizeBytes });
-    if (expected && expected !== sourceHashResult.hash) {
-      throw new Error(`hash 校验失败，期望 ${expected}，实际 ${sourceHashResult.hash}`);
-    }
-
-    const existing = getVideoByHash(sourceHashResult.hash);
-    let preparedName = stagedFilename;
-    let preparedOriginalName = finalOriginalName;
-    let preparedMime = finalMime;
-
-    if (!existing && enableTranscode) {
-      updateVideoJobState(jobId, {
-        status: 'processing',
-        stage: 'compressing',
-        message: '压缩转码中（统一输出 MP4）',
-        progress: 0.58,
-      });
-
-      const transcoded = await maybeTranscodeVideo(stagedPath, finalOriginalName);
-      workingPath = transcoded.path;
-      preparedName = transcoded.filename;
-      preparedOriginalName = transcoded.originalName;
-      preparedMime = transcoded.mimeType;
-    } else if (existing) {
-      updateVideoJobState(jobId, {
-        status: 'processing',
-        stage: 'deduplicating',
-        message: '检测到相同 hash，复用已存在资源',
-        progress: 0.62,
-      });
-    }
-
-    updateVideoJobState(jobId, {
-      status: 'processing',
-      stage: 'storing_local',
-      message: '写入播放池中',
-      progress: 0.78,
-    });
-
-    const video = await storeVideoRecord({
-      title,
-      description,
-      originalName: preparedOriginalName,
-      mimeType: preparedMime,
-      sourceHash: sourceHashResult.hash,
-      sourceType,
-      sourceValue,
-      preparedFilePath: workingPath,
-      preparedFileName: existing ? existing.filename : preparedName,
-      onStage: (stagePatch) => updateVideoJobState(jobId, stagePatch),
+      mimeType: 'video/mp4',
+      size: 0,
+      hash: contentHash,
+      sourceType: 'local_hash',
+      sourceValue: localFileName || contentHash,
+      ossKey: '',
+      storedInOss: 0,
+      localAvailable: 0,
+      lastAccessedAt: nowIso(),
+      localSize: 0,
+      createdAt: nowIso(),
     });
 
     updateVideoJobState(jobId, {
       status: 'completed',
       stage: 'completed',
-      message: '已完成',
+      message: existing ? 'hash 已存在，复用视频记录' : '本地模式视频已登记',
       progress: 1,
       videoId: video.id,
       error: '',
     });
   } catch (err) {
-    if (workingPath && isPathInDirectory(workingPath, tempDir)) {
-      await removeFileIfExists(workingPath);
-    }
-    if (stagedPath && stagedPath !== workingPath && isPathInDirectory(stagedPath, tempDir)) {
-      await removeFileIfExists(stagedPath);
-    }
-
     updateVideoJobState(jobId, {
       status: 'failed',
       stage: 'failed',
@@ -1486,36 +1503,124 @@ async function processRemoteImportJob(jobId, payload) {
   }
 }
 
-app.post('/api/auth/root/login', (req, res) => {
-  const { username, password } = req.body || {};
-  if (username !== rootUsername || password !== rootPassword) {
-    res.status(401).json({ error: 'Invalid root credentials' });
-    return;
+function normalizeUsername(username) {
+  return String(username || '').trim().toLowerCase();
+}
+
+function hashPassword(password) {
+  const salt = randomBytes(16).toString('hex');
+  const digest = scryptSync(String(password || ''), salt, 64).toString('hex');
+  return `scrypt$${salt}$${digest}`;
+}
+
+function verifyPassword(password, storedHash) {
+  const raw = String(storedHash || '');
+  const parts = raw.split('$');
+  if (parts.length === 3 && parts[0] === 'scrypt') {
+    const [, salt, digestHex] = parts;
+    const actual = scryptSync(String(password || ''), salt, 64);
+    const expected = Buffer.from(digestHex, 'hex');
+    if (expected.length !== actual.length) {
+      return false;
+    }
+    return timingSafeEqual(actual, expected);
   }
+  return false;
+}
 
-  const token = jwt.sign({ role: 'root', username, ts: Date.now() }, jwtSecret, { expiresIn: '7d' });
-  res.cookie('root_token', token, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: false,
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-  });
+function validateUserInput(username, password) {
+  const safeUsername = normalizeUsername(username);
+  if (!/^[a-z0-9_]{3,32}$/.test(safeUsername)) {
+    throw new Error('用户名需为 3-32 位，且仅支持小写字母/数字/下划线');
+  }
+  const safePassword = String(password || '');
+  return { safeUsername, safePassword };
+}
 
-  res.json({ token });
+app.post('/api/auth/register', (req, res, next) => {
+  try {
+    const { safeUsername, safePassword } = validateUserInput(req.body?.username, req.body?.password);
+    if (getUserByUsername(safeUsername)) {
+      res.status(409).json({ error: '用户名已存在' });
+      return;
+    }
+
+    const createdAt = nowIso();
+    const role = countUsers() === 0 ? 'root' : 'user';
+    const passwordHash = hashPassword(safePassword);
+    const user = createUser({
+      id: uuidv4(),
+      username: safeUsername,
+      passwordHash,
+      role,
+      createdAt,
+      updatedAt: createdAt,
+      lastLoginAt: createdAt,
+    });
+
+    const token = issueAuthToken(user);
+    res.cookie(authTokenCookieName, token, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: false,
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+    });
+
+    res.status(201).json({ token, user: serializeUser(user) });
+  } catch (err) {
+    next(err);
+  }
 });
 
-app.post('/api/auth/root/logout', (_req, res) => {
-  res.clearCookie('root_token');
+app.post('/api/auth/login', (req, res, next) => {
+  try {
+    const username = normalizeUsername(req.body?.username);
+    const password = String(req.body?.password || '');
+    const user = getUserByUsername(username);
+    if (!user) {
+      res.status(401).json({ error: '用户名或密码错误' });
+      return;
+    }
+
+    const ok = verifyPassword(password, user.password_hash);
+    if (!ok) {
+      res.status(401).json({ error: '用户名或密码错误' });
+      return;
+    }
+
+    const loginAt = nowIso();
+    touchUserLastLogin(user.id, loginAt);
+    const refreshed = getUserById(user.id) || user;
+
+    const token = issueAuthToken(refreshed);
+    res.cookie(authTokenCookieName, token, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: false,
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+    });
+
+    res.json({ token, user: serializeUser(refreshed) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/auth/logout', (_req, res) => {
+  res.clearCookie(authTokenCookieName);
   res.json({ ok: true });
 });
 
-app.get('/api/auth/root/me', (req, res) => {
-  const payload = parseRootToken(req);
-  res.json({ isRoot: Boolean(payload), user: payload || null });
+app.get('/api/auth/me', authRequired, (req, res) => {
+  res.json({ isAuthenticated: true, user: req.authUser });
 });
 
-app.get('/api/supported-formats', (_req, res) => {
+app.get('/api/supported-formats', authRequired, (_req, res) => {
   res.json({
+    uploadModes: [
+      { value: 'cloud', label: '云端托管（上传文件）' },
+      { value: 'local_file', label: '本地模式（前端计算 hash，仅上传 contentHash）' },
+    ],
     formats: SUPPORTED_VIDEO_FORMATS,
     transcode: {
       enabled: enableTranscode,
@@ -1533,7 +1638,6 @@ app.get('/api/supported-formats', (_req, res) => {
     storage: {
       poolDir,
       poolMaxBytes: playPoolMaxBytes,
-      maxUploadBytes: maxUploadSizeBytes,
       ossEnabled: Boolean(ossClient),
       ossBucket: ossBucket || null,
       ossRegion: ossRegion || null,
@@ -1548,7 +1652,7 @@ app.get('/api/supported-formats', (_req, res) => {
   });
 });
 
-app.get('/api/storage', async (_req, res, next) => {
+app.get('/api/storage', authRequired, async (_req, res, next) => {
   try {
     const snapshot = await getStorageSnapshot();
     res.json(snapshot);
@@ -1557,7 +1661,7 @@ app.get('/api/storage', async (_req, res, next) => {
   }
 });
 
-app.get('/api/admin/storage', authRoot, async (_req, res, next) => {
+app.get('/api/admin/storage', authRequired, authRootRequired, async (_req, res, next) => {
   try {
     const snapshot = await getStorageSnapshot();
     res.json(snapshot);
@@ -1566,7 +1670,7 @@ app.get('/api/admin/storage', authRoot, async (_req, res, next) => {
   }
 });
 
-app.get('/api/admin/video-jobs', authRoot, (req, res) => {
+app.get('/api/admin/video-jobs', authRequired, authRootRequired, (req, res) => {
   const status = String(req.query.status || '').trim();
   const limit = parseBoundedInt(req.query.limit, 50, 1, 200);
   const offset = parseBoundedInt(req.query.offset, 0, 0, 1000000);
@@ -1583,7 +1687,7 @@ app.get('/api/admin/video-jobs', authRoot, (req, res) => {
   });
 });
 
-app.delete('/api/admin/video-jobs', authRoot, (req, res) => {
+app.delete('/api/admin/video-jobs', authRequired, authRootRequired, (req, res) => {
   const olderThanDays = parseBoundedInt(req.query.olderThanDays, 30, 1, 3650);
   const cutoffMs = Date.now() - olderThanDays * 24 * 60 * 60 * 1000;
   const cutoff = new Date(cutoffMs).toISOString();
@@ -1596,81 +1700,80 @@ app.delete('/api/admin/video-jobs', authRoot, (req, res) => {
   });
 });
 
-app.post('/api/videos', upload.single('video'), async (req, res, next) => {
+app.post('/api/videos', authRequired, upload.single('video'), async (req, res, next) => {
   try {
-    if (!req.file) {
-      res.status(400).json({ error: 'Video file is required' });
+    let uploadMode;
+    try {
+      uploadMode = parseUploadMode(req.body?.uploadMode || 'cloud');
+    } catch (err) {
+      res.status(400).json({ error: err.message });
       return;
+    }
+
+    if (uploadMode === 'cloud' && !req.file) {
+      res.status(400).json({ error: 'Video file is required in cloud mode' });
+      return;
+    }
+    if (uploadMode === 'local_file') {
+      try {
+        validateRequiredHash(req.body?.contentHash, 'contentHash');
+      } catch (err) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
     }
 
     const createdAt = nowIso();
     const job = createVideoJob({
       id: uuidv4(),
       videoId: null,
-      sourceType: 'local_upload',
+      sourceType: uploadMode === 'local_file' ? 'local_hash' : 'local_upload',
       status: 'processing',
       stage: 'upload_received',
-      message: '文件已上传，等待处理',
+      message: uploadMode === 'local_file'
+        ? '本地模式 hash 已提交，等待处理'
+        : '文件已上传，等待处理',
       progress: 0.12,
       error: '',
       createdAt,
       updatedAt: createdAt,
     });
 
-    const payload = {
-      file: {
-        filename: req.file.filename,
-        originalname: req.file.originalname,
-        mimetype: req.file.mimetype,
-      },
-      title: req.body.title,
-      description: req.body.description,
-      expectedHash: req.body.expectedHash,
-    };
+    if (uploadMode === 'local_file') {
+      if (req.file?.filename) {
+        await removeFileIfExists(path.join(tempDir, req.file.filename));
+      }
+      processLocalHashOnlyJob(job.id, {
+        title: req.body.title,
+        description: req.body.description,
+        contentHash: req.body.contentHash,
+        localFileName: req.body.localFileName,
+      }).catch(() => {
+        // handled in job processor
+      });
+    } else {
+      const payload = {
+        file: {
+          filename: req.file.filename,
+          originalname: req.file.originalname,
+          mimetype: req.file.mimetype,
+        },
+        title: req.body.title,
+        description: req.body.description,
+      };
 
-    processLocalUploadJob(job.id, payload).catch(() => {
-      // handled in job processor
-    });
-
-    res.status(202).json({ job: serializeVideoJob(job) });
-  } catch (err) {
-    next(err);
-  }
-});
-
-app.post('/api/videos/import-remote', async (req, res, next) => {
-  try {
-    const sourceType = String(req.body?.sourceType || '').trim();
-    if (!sourceType || !['server_path', 'remote_url'].includes(sourceType)) {
-      res.status(400).json({ error: 'sourceType 必须是 server_path 或 remote_url' });
-      return;
+      processLocalUploadJob(job.id, payload).catch(() => {
+        // handled in job processor
+      });
     }
 
-    const createdAt = nowIso();
-    const job = createVideoJob({
-      id: uuidv4(),
-      videoId: null,
-      sourceType,
-      status: 'processing',
-      stage: sourceType === 'remote_url' ? 'downloading_remote' : 'reading_server_file',
-      message: sourceType === 'remote_url' ? '准备拉取远程视频' : '准备读取服务器文件',
-      progress: 0.05,
-      error: '',
-      createdAt,
-      updatedAt: createdAt,
-    });
-
-    processRemoteImportJob(job.id, { ...req.body }).catch(() => {
-      // handled in job processor
-    });
-
     res.status(202).json({ job: serializeVideoJob(job) });
   } catch (err) {
     next(err);
   }
 });
 
-app.get('/api/video-jobs/:jobId', (req, res) => {
+app.get('/api/video-jobs/:jobId', authRequired, (req, res) => {
   const job = getVideoJob(req.params.jobId);
   if (!job) {
     res.status(404).json({ error: 'Job not found' });
@@ -1679,12 +1782,12 @@ app.get('/api/video-jobs/:jobId', (req, res) => {
   res.json({ job: serializeVideoJob(job) });
 });
 
-app.get('/api/videos', (_req, res) => {
+app.get('/api/videos', authRequired, (_req, res) => {
   const videos = listVideos().map(serializeVideo);
   res.json({ videos });
 });
 
-app.get('/api/videos/:videoId', (req, res) => {
+app.get('/api/videos/:videoId', authRequired, (req, res) => {
   const video = getVideo(req.params.videoId);
   if (!video) {
     res.status(404).json({ error: 'Video not found' });
@@ -1693,9 +1796,19 @@ app.get('/api/videos/:videoId', (req, res) => {
   res.json({ video: serializeVideo(video) });
 });
 
-app.get('/media/:videoId', async (req, res, next) => {
+app.get('/media/:videoId', authRequired, async (req, res, next) => {
   let video;
   try {
+    video = getVideo(req.params.videoId);
+    if (!video) {
+      res.status(404).json({ error: 'Video not found' });
+      return;
+    }
+    if (video.source_type === 'local_hash') {
+      res.status(404).json({ error: '该视频为本地模式，仅支持客户端本地文件播放' });
+      return;
+    }
+
     const ensured = await ensureLocalVideoAvailable(req.params.videoId);
     video = ensured.video;
 
@@ -1765,7 +1878,7 @@ app.get('/media/:videoId', async (req, res, next) => {
   }
 });
 
-app.get('/api/videos/:videoId/rooms', (req, res) => {
+app.get('/api/videos/:videoId/rooms', authRequired, (req, res) => {
   const video = getVideo(req.params.videoId);
   if (!video) {
     res.status(404).json({ error: 'Video not found' });
@@ -1776,15 +1889,27 @@ app.get('/api/videos/:videoId/rooms', (req, res) => {
   res.json({ rooms });
 });
 
-app.post('/api/videos/:videoId/rooms', (req, res) => {
+app.post('/api/videos/:videoId/rooms', authRequired, (req, res) => {
   const video = getVideo(req.params.videoId);
   if (!video) {
     res.status(404).json({ error: 'Video not found' });
     return;
   }
 
+  let roomMode;
+  try {
+    roomMode = parseRoomMode(req.body.roomMode);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+    return;
+  }
+
+  if (video.source_type === 'local_hash' && roomMode !== 'local_file') {
+    res.status(400).json({ error: '本地模式视频仅允许创建 local_file 放映室' });
+    return;
+  }
+
   const roomName = (req.body.roomName || '').trim() || `${video.title} - 放映室`;
-  const creatorName = (req.body.creatorName || '').trim() || '匿名用户';
 
   const room = createRoom({
     id: uuidv4(),
@@ -1792,19 +1917,18 @@ app.post('/api/videos/:videoId/rooms', (req, res) => {
     playlistId: null,
     startEpisodeIndex: 0,
     name: roomName,
-    creatorName,
-    creatorToken: uuidv4(),
+    creatorName: req.authUser.username,
+    creatorToken: `deprecated-${uuidv4()}`,
+    createdByUserId: req.authUser.id,
+    roomMode,
     createdAt: nowIso(),
   });
 
   const fullRoom = getRoomWithSource(room.id);
-  res.status(201).json({
-    room: serializeRoom(fullRoom),
-    creatorToken: room.creator_token,
-  });
+  res.status(201).json({ room: serializeRoom(fullRoom) });
 });
 
-app.post('/api/playlists', (req, res) => {
+app.post('/api/playlists', authRequired, (req, res) => {
   const name = (req.body.name || '').trim();
   const description = (req.body.description || '').trim();
   const episodeVideoIds = Array.isArray(req.body.episodeVideoIds)
@@ -1852,12 +1976,12 @@ app.post('/api/playlists', (req, res) => {
   res.status(201).json({ playlist: serializePlaylist(playlist) });
 });
 
-app.get('/api/playlists', (_req, res) => {
+app.get('/api/playlists', authRequired, (_req, res) => {
   const playlists = listPlaylists().map((playlist) => serializePlaylist(playlist));
   res.json({ playlists });
 });
 
-app.get('/api/playlists/:playlistId', (req, res) => {
+app.get('/api/playlists/:playlistId', authRequired, (req, res) => {
   const playlist = getPlaylist(req.params.playlistId);
   if (!playlist) {
     res.status(404).json({ error: 'Playlist not found' });
@@ -1867,7 +1991,7 @@ app.get('/api/playlists/:playlistId', (req, res) => {
   res.json({ playlist: serializePlaylist(playlist) });
 });
 
-app.post('/api/playlists/:playlistId/rooms', (req, res) => {
+app.post('/api/playlists/:playlistId/rooms', authRequired, (req, res) => {
   const playlist = getPlaylist(req.params.playlistId);
   if (!playlist) {
     res.status(404).json({ error: 'Playlist not found' });
@@ -1880,8 +2004,20 @@ app.post('/api/playlists/:playlistId/rooms', (req, res) => {
     return;
   }
 
+  let roomMode;
+  try {
+    roomMode = parseRoomMode(req.body.roomMode);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+    return;
+  }
+
+  if (roomMode !== 'local_file' && episodes.some((item) => item.video_source_type === 'local_hash')) {
+    res.status(400).json({ error: '列表包含本地模式视频，仅允许创建 local_file 放映室' });
+    return;
+  }
+
   const roomName = (req.body.roomName || '').trim() || `${playlist.name} - 放映室`;
-  const creatorName = (req.body.creatorName || '').trim() || '匿名用户';
   const startEpisodeIndex = Math.max(0, Math.min(Number(req.body.startEpisodeIndex || 0), episodes.length - 1));
 
   const room = createRoom({
@@ -1890,24 +2026,23 @@ app.post('/api/playlists/:playlistId/rooms', (req, res) => {
     playlistId: playlist.id,
     startEpisodeIndex,
     name: roomName,
-    creatorName,
-    creatorToken: uuidv4(),
+    creatorName: req.authUser.username,
+    creatorToken: `deprecated-${uuidv4()}`,
+    createdByUserId: req.authUser.id,
+    roomMode,
     createdAt: nowIso(),
   });
 
   const fullRoom = getRoomWithSource(room.id);
-  res.status(201).json({
-    room: serializeRoom(fullRoom),
-    creatorToken: room.creator_token,
-  });
+  res.status(201).json({ room: serializeRoom(fullRoom) });
 });
 
-app.get('/api/rooms', (_req, res) => {
+app.get('/api/rooms', authRequired, (_req, res) => {
   const rooms = listAllRooms().map(serializeRoom);
   res.json({ rooms });
 });
 
-app.get('/api/rooms/:roomId', (req, res) => {
+app.get('/api/rooms/:roomId', authRequired, (req, res) => {
   const room = getRoomWithSource(req.params.roomId);
   if (!room) {
     res.status(404).json({ error: 'Room not found' });
@@ -1945,6 +2080,7 @@ app.get('/api/rooms/:roomId', (req, res) => {
     },
     state,
     progress,
+    localFileRequirement: buildLocalFileRequiredPayload(room.id, state),
     syncConfig: {
       driftSoftThresholdMs: syncDriftSoftThresholdMs,
       driftHardThresholdMs: syncDriftHardThresholdMs,
@@ -1953,32 +2089,31 @@ app.get('/api/rooms/:roomId', (req, res) => {
   });
 });
 
-app.delete('/api/rooms/:roomId', (req, res) => {
+app.delete('/api/rooms/:roomId', authRequired, (req, res) => {
   const room = getRoom(req.params.roomId);
   if (!room) {
     res.status(404).json({ error: 'Room not found' });
     return;
   }
 
-  const rootPayload = parseRootToken(req);
-  const creatorToken = req.headers['x-creator-token'] || req.body?.creatorToken;
-  const creatorAllowed = isRoomCreator(room.id, creatorToken);
+  const creatorAllowed = isRoomOwner(room.id, req.authUser.id);
+  const rootAllowed = req.authUser.role === 'root';
 
-  if (!rootPayload && !creatorAllowed) {
+  if (!rootAllowed && !creatorAllowed) {
     res.status(403).json({ error: 'Only creator or root can delete this room' });
     return;
   }
 
-  closeRoom(room.id, rootPayload ? 'deleted-by-root' : 'deleted-by-creator');
+  closeRoom(room.id, rootAllowed ? 'deleted-by-root' : 'deleted-by-creator');
   res.json({ ok: true });
 });
 
-app.get('/api/admin/rooms', authRoot, (_req, res) => {
+app.get('/api/admin/rooms', authRequired, authRootRequired, (_req, res) => {
   const rooms = listAllRooms().map(serializeRoom);
   res.json({ rooms });
 });
 
-app.delete('/api/admin/rooms/:roomId', authRoot, (req, res) => {
+app.delete('/api/admin/rooms/:roomId', authRequired, authRootRequired, (req, res) => {
   const ok = closeRoom(req.params.roomId, 'deleted-by-root');
   if (!ok) {
     res.status(404).json({ error: 'Room not found' });
@@ -1989,6 +2124,14 @@ app.delete('/api/admin/rooms/:roomId', authRoot, (req, res) => {
 
 app.get('/videos/:videoId', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'video.html'));
+});
+
+app.get('/videos', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'videos.html'));
+});
+
+app.get('/upload', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'upload.html'));
 });
 
 app.get('/rooms/:roomId', (_req, res) => {
@@ -2003,8 +2146,42 @@ app.get('/', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+io.use((socket, next) => {
+  const token = getSocketAuthToken(socket);
+  if (!token) {
+    next(new Error('Authentication required'));
+    return;
+  }
+
+  let payload;
+  try {
+    payload = jwt.verify(token, jwtSecret);
+  } catch (_err) {
+    next(new Error('Invalid authentication token'));
+    return;
+  }
+
+  const user = getUserById(payload.uid);
+  if (!user) {
+    next(new Error('User not found'));
+    return;
+  }
+
+  socket.data.userId = user.id;
+  socket.data.username = user.username;
+  socket.data.userRole = user.role || 'user';
+  socket.data.roomId = null;
+  next();
+});
+
 io.on('connection', (socket) => {
-  socket.on('join-room', ({ roomId, displayName }, callback) => {
+  socket.on('join-room', (payload = {}, callback) => {
+    const roomId = String(payload.roomId || '').trim();
+    if (!roomId) {
+      callback?.({ ok: false, error: 'roomId is required' });
+      return;
+    }
+
     const room = getRoomWithSource(roomId);
     if (!room) {
       callback?.({ ok: false, error: 'Room not found' });
@@ -2014,19 +2191,27 @@ io.on('connection', (socket) => {
     removeSocketFromRoom(socket);
     ensureRoomState(roomId, room);
 
-    const name = (displayName || '').trim() || `用户-${socket.id.slice(0, 5)}`;
+    const name = socket.data.username || `用户-${socket.id.slice(0, 5)}`;
     socket.join(roomId);
     socket.data.roomId = roomId;
-    socket.data.displayName = name;
+    socket.data.username = name;
 
     const members = roomMembers.get(roomId);
-    members.set(socket.id, { id: socket.id, name });
+    members.set(socket.id, {
+      id: socket.id,
+      name,
+      userId: socket.data.userId,
+    });
 
     const existingParticipants = [...members.values()].filter((member) => member.id !== socket.id);
 
     socket.emit('existing-participants', { participants: existingParticipants });
     socket.emit('chat-history', { messages: roomMessages.get(roomId) || [] });
     socket.emit('playback-state', roomPlayback.get(roomId));
+    const localFileRequired = buildLocalFileRequiredPayload(roomId);
+    if (localFileRequired) {
+      socket.emit('local-file-required', localFileRequired);
+    }
 
     socket.to(roomId).emit('participant-joined', {
       id: socket.id,
@@ -2034,6 +2219,38 @@ io.on('connection', (socket) => {
     });
 
     callback?.({ ok: true, participants: existingParticipants });
+  });
+
+  socket.on('local-file-verified', (payload = {}, callback) => {
+    const roomId = socket.data.roomId;
+    if (!roomId) {
+      callback?.({ ok: false, error: 'Not in room' });
+      return;
+    }
+
+    const room = getRoomWithSource(roomId);
+    if (!room || room.room_mode !== 'local_file') {
+      callback?.({ ok: false, error: 'Room is not local_file mode' });
+      return;
+    }
+
+    const episodes = getRoomEpisodes(roomId, room);
+    if (!episodes.length) {
+      callback?.({ ok: false, error: 'No episodes' });
+      return;
+    }
+
+    const episodeIndex = Math.max(0, Math.min(Number(payload.episodeIndex || 0), episodes.length - 1));
+    const episode = episodes[episodeIndex];
+    const expected = normalizeHash(episode?.contentHash || '');
+    const provided = normalizeHash(payload.contentHash || '');
+    if (!expected || expected !== provided) {
+      callback?.({ ok: false, error: 'contentHash mismatch' });
+      return;
+    }
+
+    setRoomVerification(roomId, socket.data.userId, episodeIndex, provided);
+    callback?.({ ok: true, episodeIndex, contentHash: provided });
   });
 
   socket.on('chat-message', ({ text }) => {
@@ -2050,7 +2267,7 @@ io.on('connection', (socket) => {
     const message = {
       id: uuidv4(),
       senderId: socket.id,
-      senderName: socket.data.displayName || '匿名用户',
+      senderName: socket.data.username || '匿名用户',
       text: value,
       createdAt: nowIso(),
     };
@@ -2092,6 +2309,10 @@ io.on('connection', (socket) => {
     const action = (payload.action || '').trim();
     const countdownSeconds = Number(payload.countdownSeconds);
     const countdownToEpisode = Number(payload.countdownToEpisode);
+    const prevEpisodeIndex = Math.max(
+      0,
+      Math.min(Number(prev.episodeIndex || 0), Math.max(0, episodes.length - 1)),
+    );
 
     let watchedDelta = 0;
     if (prev.episodeIndex === nextEpisodeIndex) {
@@ -2102,6 +2323,30 @@ io.on('connection', (socket) => {
     }
 
     const selectedEpisode = episodes[nextEpisodeIndex] || null;
+    if (room.room_mode === 'local_file') {
+      const isEpisodeSwitch = action === 'episode-switch' && nextEpisodeIndex !== prevEpisodeIndex;
+      const gateEpisodeIndex = isEpisodeSwitch ? prevEpisodeIndex : nextEpisodeIndex;
+      const gateEpisode = episodes[gateEpisodeIndex] || null;
+      const gateHash = normalizeHash(gateEpisode?.contentHash || '');
+
+      if (!gateHash || !isRoomEpisodeVerified(roomId, socket.data.userId, gateEpisodeIndex, gateHash)) {
+        const requiredPayload = buildLocalFileRequiredPayload(roomId, {
+          ...prev,
+          episodeIndex: gateEpisodeIndex,
+        });
+        if (requiredPayload) {
+          socket.emit('local-file-required', requiredPayload);
+        }
+        socket.emit('playback-denied', {
+          reason: 'local-file-unverified',
+          requiredEpisodeIndex: gateEpisodeIndex,
+          requestedEpisodeIndex: nextEpisodeIndex,
+          contentHash: gateHash,
+          title: gateEpisode?.title || '',
+        });
+        return;
+      }
+    }
 
     const persisted = updateRoomPlaybackState({
       roomId,
@@ -2123,7 +2368,7 @@ io.on('connection', (socket) => {
       playbackRate: nextPlaybackRate,
       episodeIndex: nextEpisodeIndex,
       totalWatchedSeconds: Number(persisted?.totalWatchedSeconds || prev.totalWatchedSeconds || 0),
-      by: socket.data.displayName || '匿名用户',
+      by: socket.data.username || '匿名用户',
       updatedAt: persisted?.updatedAt || nowIso(),
     };
 
@@ -2138,13 +2383,19 @@ io.on('connection', (socket) => {
 
     roomPlayback.set(roomId, nextState);
     socket.to(roomId).emit('playback-update', nextState);
+    if (room.room_mode === 'local_file' && Number(prev.episodeIndex || 0) !== nextEpisodeIndex) {
+      const requiredPayload = buildLocalFileRequiredPayload(roomId, nextState);
+      if (requiredPayload) {
+        io.to(roomId).emit('local-file-required', requiredPayload);
+      }
+    }
   });
 
   socket.on('webrtc-offer', ({ targetId, sdp }) => {
     io.to(targetId).emit('webrtc-offer', {
       fromId: socket.id,
       sdp,
-      name: socket.data.displayName,
+      name: socket.data.username,
     });
   });
 
@@ -2173,10 +2424,6 @@ io.on('connection', (socket) => {
 
 app.use((err, _req, res, _next) => {
   if (err instanceof multer.MulterError) {
-    if (err.code === 'LIMIT_FILE_SIZE') {
-      res.status(400).json({ error: `文件超过大小限制 ${formatBytes(maxUploadSizeBytes)}` });
-      return;
-    }
     res.status(400).json({ error: err.message });
     return;
   }

@@ -7,15 +7,21 @@
     <link rel="stylesheet" href="/assets/style.css" />
   </head>
   <body>
-    <div class="container">
-      <div class="header">
+    <div class="container page-shell">
+      <div class="header topbar">
         <h1 id="roomTitle">放映室</h1>
-        <div class="nav">
-          <a href="/">主页</a>
+        <div class="nav topnav">
+          <a href="/">登录</a>
+          <a href="/upload">上传</a>
+          <a href="/videos">视频与列表</a>
         </div>
       </div>
 
-      <div class="columns">
+      <div class="card" style="margin-bottom: 16px">
+        <div id="authInfo" class="small">鉴权中...</div>
+      </div>
+
+      <div id="roomApp" class="columns hidden">
         <div class="card">
           <video id="watchVideo" class="watch-video" controls></video>
 
@@ -41,6 +47,20 @@
             <button id="cancelAutoplayBtn" type="button" class="secondary hidden">取消自动下一集</button>
             <button id="deleteRoomBtn" class="danger hidden">删除放映室</button>
             <span class="small" id="watchStatus">尚未加入房间</span>
+            <span class="small" id="playbackFormInfo"></span>
+          </div>
+
+          <div id="localFileGate" class="card hidden" style="margin-top: 12px; padding: 12px">
+            <h3>本地文件校验（当前集）</h3>
+            <div id="localFileHint" class="small"></div>
+            <div class="form-row" style="margin-top: 8px">
+              <label for="localFilePicker">选择本地视频文件</label>
+              <input id="localFilePicker" type="file" accept="video/*" />
+            </div>
+            <div class="flex">
+              <button id="verifyLocalFileBtn" type="button">校验并解锁播放</button>
+              <span id="localFileStatus" class="small"></span>
+            </div>
           </div>
 
           <hr />
@@ -62,11 +82,7 @@
         </div>
 
         <div class="card">
-          <h3>加入房间</h3>
-          <div class="form-row">
-            <label for="displayName">昵称</label>
-            <input id="displayName" placeholder="例如：李四" />
-          </div>
+          <h3>房间连接</h3>
           <button id="joinBtn">加入</button>
           <button id="leaveBtn" class="secondary">离开</button>
 

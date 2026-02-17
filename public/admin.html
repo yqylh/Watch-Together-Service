@@ -7,58 +7,51 @@
     <link rel="stylesheet" href="/assets/style.css" />
   </head>
   <body>
-    <div class="container">
-      <div class="header">
+    <div class="container page-shell">
+      <div class="header topbar">
         <h1>Root 管理台</h1>
-        <div class="nav">
-          <a href="/">主页</a>
+        <div class="nav topnav">
+          <a href="/">登录</a>
+          <a href="/upload">上传</a>
+          <a href="/videos">视频与列表</a>
         </div>
       </div>
 
       <div class="card">
-        <h2>登录 Root</h2>
-        <form id="loginForm">
-          <div class="form-row">
-            <label for="username">用户名</label>
-            <input id="username" name="username" value="root" />
-          </div>
-          <div class="form-row">
-            <label for="password">密码</label>
-            <input id="password" name="password" type="password" />
-          </div>
-          <div class="flex">
-            <button type="submit">登录</button>
-            <button type="button" id="logoutBtn" class="secondary">退出</button>
-          </div>
-          <div id="loginStatus" class="status"></div>
-        </form>
-      </div>
-
-      <div class="card" style="margin-top: 16px">
-        <h2>存储状态</h2>
-        <div id="storageSummary" class="small"></div>
-      </div>
-
-      <div class="card" style="margin-top: 16px">
-        <h2>上传/导入任务（Root）</h2>
-        <div class="flex" style="margin-bottom: 8px">
-          <select id="jobStatusFilter" style="width: auto">
-            <option value="">全部状态</option>
-            <option value="processing">processing</option>
-            <option value="completed">completed</option>
-            <option value="failed">failed</option>
-          </select>
-          <button id="refreshJobsBtn" type="button" class="secondary">刷新任务</button>
-          <input id="cleanupDays" type="number" min="1" value="30" style="width: 120px" />
-          <button id="cleanupJobsBtn" type="button" class="danger">清理历史任务</button>
+        <h2>登录状态</h2>
+        <div id="authStatus" class="status"></div>
+        <div class="flex" style="margin-top: 8px">
+          <button id="logoutBtn" type="button" class="secondary hidden">退出登录</button>
         </div>
-        <div id="jobStatusText" class="status"></div>
-        <div id="jobList" class="room-list"></div>
       </div>
 
-      <div class="card" style="margin-top: 16px">
-        <h2>所有放映室（Root）</h2>
-        <div id="roomList" class="room-list"></div>
+      <div id="adminContent" class="hidden">
+        <div class="card" style="margin-top: 16px">
+          <h2>存储状态</h2>
+          <div id="storageSummary" class="small"></div>
+        </div>
+
+        <div class="card" style="margin-top: 16px">
+          <h2>上传/导入任务（Root）</h2>
+          <div class="flex" style="margin-bottom: 8px">
+            <select id="jobStatusFilter" style="width: auto">
+              <option value="">全部状态</option>
+              <option value="processing">processing</option>
+              <option value="completed">completed</option>
+              <option value="failed">failed</option>
+            </select>
+            <button id="refreshJobsBtn" type="button" class="secondary">刷新任务</button>
+            <input id="cleanupDays" type="number" min="1" value="30" style="width: 120px" />
+            <button id="cleanupJobsBtn" type="button" class="danger">清理历史任务</button>
+          </div>
+          <div id="jobStatusText" class="status"></div>
+          <div id="jobList" class="room-list"></div>
+        </div>
+
+        <div class="card" style="margin-top: 16px">
+          <h2>所有放映室（Root）</h2>
+          <div id="roomList" class="room-list"></div>
+        </div>
       </div>
     </div>
 

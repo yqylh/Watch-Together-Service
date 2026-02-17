@@ -7,16 +7,22 @@
     <link rel="stylesheet" href="/assets/style.css" />
   </head>
   <body>
-    <div class="container">
-      <div class="header">
+    <div class="container page-shell">
+      <div class="header topbar">
         <h1>视频详情</h1>
-        <div class="nav">
-          <a href="/">主页</a>
-          <a href="/admin">Root 管理</a>
+        <div class="nav topnav">
+          <a href="/">登录</a>
+          <a href="/upload">上传</a>
+          <a href="/videos">视频与列表</a>
+          <a href="/admin">管理</a>
         </div>
       </div>
 
-      <div class="columns">
+      <div class="card" style="margin-bottom: 16px">
+        <div id="authInfo" class="small">鉴权中...</div>
+      </div>
+
+      <div id="videoContent" class="columns hidden">
         <div class="card">
           <h2 id="videoTitle">加载中...</h2>
           <video id="videoPlayer" class="watch-video" controls></video>
@@ -32,8 +38,12 @@
               <input id="roomName" name="roomName" placeholder="可选" />
             </div>
             <div class="form-row">
-              <label for="creatorName">你的昵称</label>
-              <input id="creatorName" name="creatorName" required />
+              <label for="roomMode">播放模式</label>
+              <select id="roomMode" name="roomMode" required>
+                <option value="">请选择播放模式</option>
+                <option value="cloud">云端托管</option>
+                <option value="local_file">本地文件</option>
+              </select>
             </div>
             <button type="submit">创建并进入</button>
             <div id="roomStatus" class="status"></div>
@@ -41,7 +51,7 @@
         </div>
       </div>
 
-      <div class="card" style="margin-top: 16px">
+      <div class="card" style="margin-top: 16px" id="roomListCard">
         <h2>这个视频的放映室</h2>
         <div id="roomList" class="room-list"></div>
       </div>

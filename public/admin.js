@@ -1,6 +1,7 @@
-const loginForm = document.getElementById('loginForm');
+const authStatusEl = document.getElementById('authStatus');
+const adminContentEl = document.getElementById('adminContent');
 const logoutBtn = document.getElementById('logoutBtn');
-const loginStatus = document.getElementById('loginStatus');
+
 const roomListEl = document.getElementById('roomList');
 const storageSummaryEl = document.getElementById('storageSummary');
 const jobStatusFilterEl = document.getElementById('jobStatusFilter');
@@ -10,23 +11,24 @@ const cleanupJobsBtn = document.getElementById('cleanupJobsBtn');
 const jobStatusTextEl = document.getElementById('jobStatusText');
 const jobListEl = document.getElementById('jobList');
 
-const ROOT_TOKEN_KEY = 'root_token';
+const AUTH_TOKEN_KEY = 'auth_token';
+let currentUser = null;
 
-function getRootToken() {
-  return localStorage.getItem(ROOT_TOKEN_KEY) || '';
+function getAuthToken() {
+  return localStorage.getItem(AUTH_TOKEN_KEY) || '';
 }
 
-function setRootToken(token) {
+function setAuthToken(token) {
   if (token) {
-    localStorage.setItem(ROOT_TOKEN_KEY, token);
+    localStorage.setItem(AUTH_TOKEN_KEY, token);
   } else {
-    localStorage.removeItem(ROOT_TOKEN_KEY);
+    localStorage.removeItem(AUTH_TOKEN_KEY);
   }
 }
 
 async function apiFetch(url, options = {}) {
   const headers = new Headers(options.headers || {});
-  const token = getRootToken();
+  const token = getAuthToken();
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
   }
@@ -82,6 +84,32 @@ function formatProgress(value) {
   return `${p}%`;
 }
 
+function renderAuthStatus() {
+  if (!currentUser) {
+    authStatusEl.innerHTML = '未登录，请先前往 <a href="/">主页登录</a>';
+    adminContentEl.classList.add('hidden');
+    if (logoutBtn) {
+      logoutBtn.classList.add('hidden');
+    }
+    return;
+  }
+
+  if (currentUser.role !== 'root') {
+    authStatusEl.textContent = `当前用户 ${currentUser.username} 不是 Root，无权限访问管理台`;
+    adminContentEl.classList.add('hidden');
+    if (logoutBtn) {
+      logoutBtn.classList.remove('hidden');
+    }
+    return;
+  }
+
+  authStatusEl.textContent = `已登录 Root: ${currentUser.username}`;
+  adminContentEl.classList.remove('hidden');
+  if (logoutBtn) {
+    logoutBtn.classList.remove('hidden');
+  }
+}
+
 function renderJobs(jobs) {
   jobListEl.innerHTML = '';
   if (!jobs.length) {
@@ -127,24 +155,20 @@ async function loadJobs() {
 }
 
 async function loadStorage() {
-  try {
-    const data = await apiFetch('/api/admin/storage');
-    const pool = data.pool || {};
-    const disk = data.disk || null;
-    const uploadLimit = data.uploadLimit || {};
-    const lines = [];
-    lines.push(`播放池: ${formatBytes(pool.usageBytes)} / ${formatBytes(pool.maxBytes)} (可用 ${formatBytes(pool.availableBytes)})`);
-    lines.push(`文件数: ${Number(pool.fileCount || 0)}`);
-    lines.push(`上传大小限制: ${uploadLimit.maxLabel || formatBytes(uploadLimit.maxBytes)}`);
-    if (disk) {
-      lines.push(`磁盘剩余: ${formatBytes(disk.freeBytes)} / ${formatBytes(disk.totalBytes)}`);
-    } else {
-      lines.push('磁盘信息: 当前环境不支持读取');
-    }
-    storageSummaryEl.innerHTML = lines.join('<br/>');
-  } catch (err) {
-    storageSummaryEl.textContent = `读取存储状态失败: ${err.message}`;
+  const data = await apiFetch('/api/admin/storage');
+  const pool = data.pool || {};
+  const disk = data.disk || null;
+
+  const lines = [];
+  lines.push(`播放池: ${formatBytes(pool.usageBytes)} / ${formatBytes(pool.maxBytes)} (可用 ${formatBytes(pool.availableBytes)})`);
+  lines.push(`文件数: ${Number(pool.fileCount || 0)}`);
+  if (disk) {
+    lines.push(`磁盘剩余: ${formatBytes(disk.freeBytes)} / ${formatBytes(disk.totalBytes)}`);
+  } else {
+    lines.push('磁盘信息: 当前环境不支持读取');
   }
+
+  storageSummaryEl.innerHTML = lines.join('<br/>');
 }
 
 function renderRooms(rooms) {
@@ -164,7 +188,7 @@ function renderRooms(rooms) {
 
     const info = document.createElement('div');
     info.className = 'small';
-    info.textContent = `${room.sourceLabel || `视频: ${room.videoTitle || '-'}`} | 创建者: ${room.creatorName} | 在线: ${room.memberCount} | 续播: 第 ${Number(room.latestEpisodeIndex || 0) + 1} 集 ${formatSeconds(room.latestCurrentTime || 0)} | 累计观看: ${formatSeconds(room.totalWatchedSeconds || 0)}`;
+    info.textContent = `${room.sourceLabel || `视频: ${room.videoTitle || '-'}`} | 模式: ${room.roomMode || 'cloud'} | 创建者: ${room.creatorName || '-'} | 在线: ${room.memberCount || 0} | 续播: 第 ${Number(room.latestEpisodeIndex || 0) + 1} 集 ${formatSeconds(room.latestCurrentTime || 0)} | 累计观看: ${formatSeconds(room.totalWatchedSeconds || 0)}`;
 
     const createdAt = document.createElement('div');
     createdAt.className = 'small';
@@ -197,54 +221,24 @@ function renderRooms(rooms) {
 }
 
 async function loadRooms() {
-  try {
-    const data = await apiFetch('/api/admin/rooms');
-    loginStatus.textContent = 'Root 已登录';
-    renderRooms(data.rooms);
-    await Promise.all([loadStorage(), loadJobs()]);
-  } catch (err) {
-    loginStatus.textContent = `未登录 Root: ${err.message}`;
-    roomListEl.innerHTML = '<div class="small">请先登录 Root</div>';
-    storageSummaryEl.innerHTML = '<div class="small">请先登录 Root</div>';
-    jobStatusTextEl.textContent = '请先登录 Root';
-    jobListEl.innerHTML = '<div class="small">请先登录 Root</div>';
-  }
+  const data = await apiFetch('/api/admin/rooms');
+  renderRooms(data.rooms || []);
 }
 
-loginForm.addEventListener('submit', async (event) => {
-  event.preventDefault();
-  loginStatus.textContent = '登录中...';
-  const formData = new FormData(loginForm);
-
+async function checkAuth() {
   try {
-    const result = await apiFetch('/api/auth/root/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: formData.get('username'),
-        password: formData.get('password'),
-      }),
-    });
-
-    setRootToken(result.token);
-    loginStatus.textContent = 'Root 登录成功';
-    await loadRooms();
-  } catch (err) {
-    loginStatus.textContent = `登录失败: ${err.message}`;
-  }
-});
-
-logoutBtn.addEventListener('click', async () => {
-  try {
-    await apiFetch('/api/auth/root/logout', { method: 'POST' });
+    const result = await apiFetch('/api/auth/me');
+    currentUser = result.user || null;
   } catch (_err) {
-    // ignore
+    currentUser = null;
   }
+  renderAuthStatus();
+  return Boolean(currentUser && currentUser.role === 'root');
+}
 
-  setRootToken('');
-  loginStatus.textContent = 'Root 已退出';
-  await loadRooms();
-});
+async function loadDashboard() {
+  await Promise.all([loadStorage(), loadJobs(), loadRooms()]);
+}
 
 refreshJobsBtn.addEventListener('click', async () => {
   try {
@@ -275,4 +269,30 @@ cleanupJobsBtn.addEventListener('click', async () => {
   }
 });
 
-loadRooms();
+if (logoutBtn) {
+  logoutBtn.addEventListener('click', async () => {
+    try {
+      await apiFetch('/api/auth/logout', { method: 'POST' });
+    } catch (_err) {
+      // ignore
+    }
+    setAuthToken('');
+    currentUser = null;
+    renderAuthStatus();
+    window.location.href = '/';
+  });
+}
+
+(async function init() {
+  const isRoot = await checkAuth();
+  if (!isRoot) {
+    return;
+  }
+
+  try {
+    await loadDashboard();
+  } catch (err) {
+    authStatusEl.textContent = `加载管理数据失败: ${err.message}`;
+    adminContentEl.classList.add('hidden');
+  }
+})();
