@@ -5,7 +5,9 @@ const videoCoverWrapEl = document.getElementById('videoCoverWrap');
 const videoMetaEl = document.getElementById('videoMeta');
 const videoLinkEl = document.getElementById('videoLink');
 const roomListEl = document.getElementById('roomList');
-const authInfoEl = document.getElementById('authInfo');
+const authStatusEl = document.getElementById('authStatus');
+const currentUserEl = document.getElementById('currentUser');
+const logoutBtn = document.getElementById('logoutBtn');
 const videoContentEl = document.getElementById('videoContent');
 const roomListCardEl = document.getElementById('roomListCard');
 
@@ -14,6 +16,7 @@ const roomStatusEl = document.getElementById('roomStatus');
 
 const {
   apiFetch,
+  setAuthToken,
   formatDate,
   formatSeconds,
   formatBytes,
@@ -46,11 +49,12 @@ function renderCover(video) {
 }
 
 function renderRoomRow(room) {
-  const row = document.createElement('div');
-  row.className = 'room-item';
+  const row = document.createElement('article');
+  row.className = 'room-card';
 
   const link = document.createElement('a');
   link.href = `/rooms/${room.id}`;
+  link.className = 'room-title';
   link.textContent = room.name;
 
   const info = document.createElement('div');
@@ -127,16 +131,29 @@ async function checkAuth() {
   try {
     const result = await apiFetch('/api/auth/me');
     currentUser = result.user;
-    authInfoEl.textContent = `已登录: ${currentUser.username} (${currentUser.role})`;
+    currentUserEl.textContent = `${currentUser.username} (${currentUser.role})`;
+    authStatusEl.textContent = '登录状态有效';
     return true;
   } catch (_err) {
     currentUser = null;
-    authInfoEl.innerHTML = '未登录，请先前往 <a href="/">主页登录</a>';
+    setAuthToken('');
+    authStatusEl.textContent = '未登录，正在跳转...';
     videoContentEl.classList.add('hidden');
     roomListCardEl.classList.add('hidden');
+    window.location.href = '/';
     return false;
   }
 }
+
+logoutBtn.addEventListener('click', async () => {
+  try {
+    await apiFetch('/api/auth/logout', { method: 'POST' });
+  } catch (_err) {
+    // ignore
+  }
+  setAuthToken('');
+  window.location.href = '/';
+});
 
 (async function init() {
   const authed = await checkAuth();

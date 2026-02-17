@@ -1,7 +1,13 @@
 const roomId = window.location.pathname.split('/').filter(Boolean).pop();
 
 const authInfoEl = document.getElementById('authInfo');
+const currentUserEl = document.getElementById('currentUser');
+const logoutBtn = document.getElementById('logoutBtn');
 const roomAppEl = document.getElementById('roomApp');
+const collapseSidePanelBtn = document.getElementById('collapseSidePanelBtn');
+const expandSidePanelBtn = document.getElementById('expandSidePanelBtn');
+const roomTabButtons = Array.from(document.querySelectorAll('.room-tab-btn'));
+const roomTabPanels = Array.from(document.querySelectorAll('.room-tab-panel'));
 
 const roomTitleEl = document.getElementById('roomTitle');
 const watchVideoEl = document.getElementById('watchVideo');
@@ -30,6 +36,7 @@ const joinBtn = document.getElementById('joinBtn');
 const leaveBtn = document.getElementById('leaveBtn');
 
 const localVideoEl = document.getElementById('localVideo');
+const localVideoLabelEl = document.getElementById('localVideoLabel');
 const remoteGridEl = document.getElementById('remoteGrid');
 
 const participantListEl = document.getElementById('participantList');
@@ -85,6 +92,14 @@ function getAuthToken() {
   return localStorage.getItem(AUTH_TOKEN_KEY) || '';
 }
 
+function setAuthToken(token) {
+  if (token) {
+    localStorage.setItem(AUTH_TOKEN_KEY, token);
+  } else {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+  }
+}
+
 function normalizeHash(hash) {
   return String(hash || '').trim().toLowerCase();
 }
@@ -115,6 +130,31 @@ async function apiFetch(url, options = {}) {
 
 function setStatus(text) {
   watchStatusEl.textContent = text;
+}
+
+function setSidePanelCollapsed(collapsed) {
+  roomAppEl.classList.toggle('side-collapsed', Boolean(collapsed));
+  if (collapsed) {
+    expandSidePanelBtn.classList.remove('hidden');
+  } else {
+    expandSidePanelBtn.classList.add('hidden');
+  }
+}
+
+function switchRoomTab(panelId) {
+  const targetId = String(panelId || '').trim();
+  if (!targetId) {
+    return;
+  }
+
+  roomTabButtons.forEach((btn) => {
+    const active = btn.dataset.roomTab === targetId;
+    btn.classList.toggle('is-active', active);
+  });
+
+  roomTabPanels.forEach((panel) => {
+    panel.classList.toggle('is-active', panel.id === targetId);
+  });
 }
 
 function mapSourceTypeLabel(sourceType) {
@@ -262,13 +302,14 @@ function attachRemoteStream(peerId, peerName, stream) {
   if (!box) {
     box = document.createElement('div');
     box.id = `remote-${peerId}`;
+    box.className = 'video-tile';
 
     const video = document.createElement('video');
     video.autoplay = true;
     video.playsInline = true;
 
     const label = document.createElement('div');
-    label.className = 'small';
+    label.className = 'video-tile-label';
     label.textContent = peerName || '远端用户';
 
     box.appendChild(video);
@@ -277,6 +318,10 @@ function attachRemoteStream(peerId, peerName, stream) {
   }
 
   const video = box.querySelector('video');
+  const label = box.querySelector('.video-tile-label');
+  if (label && peerName) {
+    label.textContent = peerName;
+  }
   video.srcObject = stream;
   video.volume = voiceVolumeLevel;
   video.muted = voiceMuted;
@@ -1268,6 +1313,30 @@ leaveBtn.addEventListener('click', () => {
   leaveRoom();
 });
 
+collapseSidePanelBtn.addEventListener('click', () => {
+  setSidePanelCollapsed(true);
+});
+
+expandSidePanelBtn.addEventListener('click', () => {
+  setSidePanelCollapsed(false);
+});
+
+roomTabButtons.forEach((btn) => {
+  btn.addEventListener('click', () => {
+    switchRoomTab(btn.dataset.roomTab);
+  });
+});
+
+logoutBtn.addEventListener('click', async () => {
+  try {
+    await apiFetch('/api/auth/logout', { method: 'POST' });
+  } catch (_err) {
+    // ignore
+  }
+  setAuthToken('');
+  window.location.href = '/';
+});
+
 chatFormEl.addEventListener('submit', (event) => {
   event.preventDefault();
   const text = (chatInputEl.value || '').trim();
@@ -1415,17 +1484,24 @@ async function checkAuth() {
     const result = await apiFetch('/api/auth/me');
     currentUser = result.user;
     authInfoEl.textContent = `已登录: ${currentUser.username} (${currentUser.role})`;
+    currentUserEl.textContent = `${currentUser.username} (${currentUser.role})`;
+    localVideoLabelEl.textContent = `${currentUser.username} (你)`;
     roomAppEl.classList.remove('hidden');
     return true;
   } catch (_err) {
     currentUser = null;
-    authInfoEl.innerHTML = '未登录，请先前往 <a href="/">主页登录</a>';
+    setAuthToken('');
+    authInfoEl.textContent = '未登录，正在跳转...';
     roomAppEl.classList.add('hidden');
+    window.location.href = '/';
     return false;
   }
 }
 
 (async function init() {
+  switchRoomTab('episodeTabPanel');
+  setSidePanelCollapsed(false);
+
   const authed = await checkAuth();
   if (!authed) {
     return;

@@ -8,24 +8,22 @@
   </head>
   <body>
     <div class="container page-shell">
-      <div class="header topbar">
+      <div class="header topbar site-topbar">
         <div>
           <p class="eyebrow">UPLOAD CENTER</p>
           <h1>上传视频</h1>
           <p class="small" id="authStatus">鉴权中...</p>
         </div>
-        <div class="nav topnav">
-          <a href="/">登录</a>
-          <a href="/upload">上传</a>
-          <a href="/videos">视频与列表</a>
-          <a href="/admin">管理</a>
-        </div>
-      </div>
-
-      <div class="card" style="margin-bottom: 16px">
-        <div class="flex">
-          <div class="user-pill" id="currentUser">未登录</div>
-          <button id="logoutBtn" class="secondary" type="button">退出登录</button>
+        <div class="topbar-right">
+          <div class="nav topnav">
+            <a href="/upload">上传</a>
+            <a href="/videos">视频中心</a>
+            <a href="/admin">管理</a>
+          </div>
+          <div class="top-auth">
+            <div class="user-pill" id="currentUser">未登录</div>
+            <button id="logoutBtn" class="secondary" type="button">退出</button>
+          </div>
         </div>
       </div>
 

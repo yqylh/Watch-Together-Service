@@ -8,24 +8,28 @@
   </head>
   <body>
     <div class="container page-shell">
-      <div class="header topbar">
-        <h1 id="roomTitle">放映室</h1>
-        <div class="nav topnav">
-          <a href="/">登录</a>
-          <a href="/upload">上传</a>
-          <a href="/videos">视频与列表</a>
+      <div class="header topbar site-topbar">
+        <div>
+          <h1 id="roomTitle">放映室</h1>
+          <p class="small" id="authInfo">鉴权中...</p>
+        </div>
+        <div class="topbar-right">
+          <div class="nav topnav">
+            <a href="/upload">上传</a>
+            <a href="/videos">视频中心</a>
+          </div>
+          <div class="top-auth">
+            <div class="user-pill" id="currentUser">未登录</div>
+            <button id="logoutBtn" class="secondary" type="button">退出</button>
+          </div>
         </div>
       </div>
 
-      <div class="card" style="margin-bottom: 16px">
-        <div id="authInfo" class="small">鉴权中...</div>
-      </div>
-
-      <div id="roomApp" class="columns hidden">
-        <div class="card">
+      <div id="roomApp" class="room-layout hidden">
+        <div class="card room-main-card">
           <video id="watchVideo" class="watch-video" controls></video>
 
-          <div class="flex" style="margin-top: 8px">
+          <div class="flex player-controls">
             <label for="playbackRate">倍速</label>
             <select id="playbackRate" style="width: auto">
               <option value="0.5">0.5x</option>
@@ -62,46 +66,58 @@
               <span id="localFileStatus" class="small"></span>
             </div>
           </div>
+        </div>
 
-          <hr />
-
-          <h3>剧集列表</h3>
-          <div id="episodeList" class="room-list"></div>
-
-          <hr />
-
-          <h3>本地音视频</h3>
-          <div class="flex">
-            <label><input id="joinCam" type="checkbox" checked /> 打开摄像头</label>
-            <label><input id="joinMic" type="checkbox" checked /> 打开麦克风</label>
+        <div id="roomSidePanel" class="card room-side-card">
+          <div class="room-side-head">
+            <h3>成员视频墙</h3>
+            <button id="collapseSidePanelBtn" type="button" class="secondary">隐藏右栏</button>
           </div>
-          <video id="localVideo" autoplay muted playsinline></video>
+          <div class="small">所有成员画面同屏展示，人数增加时自动等比例缩放。</div>
 
-          <h3>远端成员视频</h3>
-          <div id="remoteGrid" class="remote-grid"></div>
-        </div>
+          <div class="flex room-join-controls">
+            <label><input id="joinCam" type="checkbox" checked /> 摄像头</label>
+            <label><input id="joinMic" type="checkbox" checked /> 麦克风</label>
+            <button id="joinBtn">加入</button>
+            <button id="leaveBtn" class="secondary">离开</button>
+          </div>
 
-        <div class="card">
-          <h3>房间连接</h3>
-          <button id="joinBtn">加入</button>
-          <button id="leaveBtn" class="secondary">离开</button>
-
-          <hr />
-
-          <h3>成员</h3>
-          <div id="participantList" class="participant-list"></div>
-
-          <hr />
-
-          <h3>聊天</h3>
-          <div id="chatList" class="chat-list" style="max-height: 280px; overflow-y: auto"></div>
-          <form id="chatForm" style="margin-top: 8px">
-            <div class="form-row">
-              <input id="chatInput" placeholder="输入消息" />
+          <div class="video-wall-grid">
+            <div id="localVideoTile" class="video-tile">
+              <video id="localVideo" autoplay muted playsinline></video>
+              <div id="localVideoLabel" class="video-tile-label">你</div>
             </div>
-            <button type="submit">发送</button>
-          </form>
+            <div id="remoteGrid" class="video-wall-remote"></div>
+          </div>
+
+          <div class="room-tabs">
+            <button type="button" class="room-tab-btn is-active" data-room-tab="episodeTabPanel">剧集</button>
+            <button type="button" class="room-tab-btn" data-room-tab="chatTabPanel">聊天</button>
+            <button type="button" class="room-tab-btn" data-room-tab="memberTabPanel">成员</button>
+          </div>
+
+          <div id="episodeTabPanel" class="room-tab-panel is-active">
+            <div id="episodeList" class="room-list"></div>
+          </div>
+
+          <div id="chatTabPanel" class="room-tab-panel">
+            <div id="chatList" class="chat-list chat-list-panel"></div>
+            <form id="chatForm" style="margin-top: 8px">
+              <div class="form-row">
+                <input id="chatInput" placeholder="输入消息" />
+              </div>
+              <button type="submit">发送</button>
+            </form>
+          </div>
+
+          <div id="memberTabPanel" class="room-tab-panel">
+            <div id="participantList" class="participant-list"></div>
+          </div>
         </div>
+
+        <button id="expandSidePanelBtn" type="button" class="secondary side-expand-btn hidden">
+          展开成员侧栏
+        </button>
       </div>
     </div>
 

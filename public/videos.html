@@ -3,69 +3,86 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>视频与列表 - 一起看服务</title>
+    <title>视频中心 - 一起看服务</title>
     <link rel="stylesheet" href="/assets/style.css" />
   </head>
   <body>
     <div class="container page-shell">
-      <div class="header topbar">
+      <div class="header topbar site-topbar">
         <div>
-          <p class="eyebrow">BROWSE & CREATE</p>
-          <h1>视频与视频列表</h1>
+          <p class="eyebrow">WATCH HUB</p>
+          <h1>视频中心</h1>
           <p class="small" id="authStatus">鉴权中...</p>
         </div>
-        <div class="nav topnav">
-          <a href="/">登录</a>
-          <a href="/upload">上传</a>
-          <a href="/videos">视频与列表</a>
-          <a href="/admin">管理</a>
-        </div>
-      </div>
-
-      <div class="card" style="margin-bottom: 16px">
-        <div class="flex">
-          <div class="user-pill" id="currentUser">未登录</div>
-          <button id="logoutBtn" class="secondary" type="button">退出登录</button>
-        </div>
-      </div>
-
-      <div class="grid two-col">
-        <div class="card">
-          <h2>创建视频列表（多集）</h2>
-          <form id="playlistForm">
-            <div class="form-row">
-              <label for="playlistName">列表名称</label>
-              <input id="playlistName" name="name" required />
-            </div>
-            <div class="form-row">
-              <label for="playlistDescription">列表描述</label>
-              <textarea id="playlistDescription" name="description"></textarea>
-            </div>
-            <div class="form-row">
-              <label for="playlistVideos">选择集数（按顺序）</label>
-              <select id="playlistVideos" name="episodeVideoIds" multiple size="10"></select>
-            </div>
-            <button type="submit">创建视频列表</button>
-            <div class="status" id="playlistStatus"></div>
-          </form>
-        </div>
-
-        <div class="stack">
-          <div class="card">
-            <h2>所有放映室</h2>
-            <div id="globalRoomList" class="room-list"></div>
+        <div class="topbar-right">
+          <div class="nav topnav">
+            <a href="/upload">上传</a>
+            <a href="/videos">视频中心</a>
+            <a href="/admin">管理</a>
+          </div>
+          <div class="top-auth">
+            <div class="user-pill" id="currentUser">未登录</div>
+            <button id="logoutBtn" class="secondary" type="button">退出</button>
           </div>
         </div>
       </div>
 
-      <div class="card" style="margin-top: 16px">
-        <h2>所有视频</h2>
-        <div id="videoList" class="video-list"></div>
+      <div class="card playlist-studio">
+        <h2>创建视频列表（多集）</h2>
+        <form id="playlistForm">
+          <div class="form-row">
+            <label for="playlistName">列表名称</label>
+            <input id="playlistName" name="name" placeholder="例如：第一季合集" required />
+          </div>
+          <div class="form-row">
+            <label for="playlistDescription">列表描述</label>
+            <textarea id="playlistDescription" name="description" placeholder="可选"></textarea>
+          </div>
+
+          <div class="playlist-builder">
+            <div class="builder-pane">
+              <div class="section-head compact">
+                <h3>视频库</h3>
+                <input id="librarySearch" type="search" placeholder="搜索视频标题 / 文件名" />
+              </div>
+              <div id="libraryResults" class="library-list"></div>
+            </div>
+            <div class="builder-pane">
+              <div class="section-head compact">
+                <h3>已选剧集（按顺序）</h3>
+                <div id="selectedCount" class="small">0 集</div>
+              </div>
+              <div id="selectedEpisodes" class="selected-list"></div>
+            </div>
+          </div>
+
+          <button type="submit">创建视频列表</button>
+          <div class="status" id="playlistStatus"></div>
+        </form>
+      </div>
+
+      <div class="card">
+        <div class="section-head">
+          <h2>所有放映室</h2>
+          <input id="roomSearchInput" type="search" placeholder="搜索放映室 / 创建者 / 视频" />
+        </div>
+        <div id="globalRoomList" class="card-grid room-grid"></div>
       </div>
 
       <div class="card" style="margin-top: 16px">
-        <h2>所有视频列表（多集）</h2>
-        <div id="playlistList" class="video-list"></div>
+        <div class="section-head">
+          <h2>所有视频</h2>
+          <input id="videoSearchInput" type="search" placeholder="搜索视频标题 / 文件名 / hash" />
+        </div>
+        <div id="videoList" class="card-grid media-grid"></div>
+      </div>
+
+      <div class="card" style="margin-top: 16px">
+        <div class="section-head">
+          <h2>所有视频列表</h2>
+          <input id="playlistSearchInput" type="search" placeholder="搜索列表名称 / 描述" />
+        </div>
+        <div id="playlistList" class="card-grid media-grid"></div>
       </div>
     </div>
 
