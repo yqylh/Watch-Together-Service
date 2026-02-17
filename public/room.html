@@ -56,19 +56,6 @@
             <span class="small" id="watchStatus">尚未加入房间</span>
             <span class="small" id="playbackFormInfo"></span>
           </div>
-
-          <div id="localFileGate" class="card hidden" style="margin-top: 12px; padding: 12px">
-            <h3>本地文件校验（当前集）</h3>
-            <div id="localFileHint" class="small"></div>
-            <div class="form-row" style="margin-top: 8px">
-              <label for="localFilePicker">选择本地视频文件</label>
-              <input id="localFilePicker" type="file" accept="video/*" />
-            </div>
-            <div class="flex">
-              <button id="verifyLocalFileBtn" type="button">校验并解锁播放</button>
-              <span id="localFileStatus" class="small"></span>
-            </div>
-          </div>
         </div>
 
         <div id="roomSidePanel" class="card room-side-card">
@@ -83,10 +70,24 @@
             <input id="joinMic" type="checkbox" class="hidden" />
             <button id="toggleCamBtn" type="button" class="secondary">开启摄像头</button>
             <button id="toggleMicBtn" type="button" class="secondary">开启麦克风</button>
+            <button id="verifyFilesBtn" type="button" class="secondary">选择文件并校验</button>
             <button id="joinBtn">加入</button>
             <button id="leaveBtn" class="secondary">离开</button>
             <span id="joinStateBadge" class="pill">未加入</span>
+            <span id="verifyStateBadge" class="pill">文件未校验</span>
           </div>
+          <input id="verifyFilesInput" type="file" accept="video/*" multiple class="hidden" />
+          <div class="verify-panel">
+            <div class="verify-progress-head">
+              <span id="verifyProgressText" class="small">0/0 已校验</span>
+            </div>
+            <div class="verify-progress-track">
+              <div id="verifyProgressBar" class="verify-progress-bar"></div>
+            </div>
+            <div id="verifyMissingEpisodes" class="small"></div>
+            <div id="verifyUnmatchedFiles" class="small"></div>
+          </div>
+          <div id="verifyStatus" class="small"></div>
 
           <div class="video-wall-grid">
             <div id="localVideoTile" class="video-tile">

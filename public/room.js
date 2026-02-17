@@ -25,11 +25,14 @@ const playbackFormInfoEl = document.getElementById('playbackFormInfo');
 const deleteRoomBtn = document.getElementById('deleteRoomBtn');
 const episodeListEl = document.getElementById('episodeList');
 
-const localFileGateEl = document.getElementById('localFileGate');
-const localFileHintEl = document.getElementById('localFileHint');
-const localFilePickerEl = document.getElementById('localFilePicker');
-const verifyLocalFileBtn = document.getElementById('verifyLocalFileBtn');
-const localFileStatusEl = document.getElementById('localFileStatus');
+const verifyFilesBtn = document.getElementById('verifyFilesBtn');
+const verifyFilesInputEl = document.getElementById('verifyFilesInput');
+const verifyStateBadgeEl = document.getElementById('verifyStateBadge');
+const verifyStatusEl = document.getElementById('verifyStatus');
+const verifyProgressTextEl = document.getElementById('verifyProgressText');
+const verifyProgressBarEl = document.getElementById('verifyProgressBar');
+const verifyMissingEpisodesEl = document.getElementById('verifyMissingEpisodes');
+const verifyUnmatchedFilesEl = document.getElementById('verifyUnmatchedFiles');
 
 const joinCamEl = document.getElementById('joinCam');
 const joinMicEl = document.getElementById('joinMic');
@@ -85,13 +88,11 @@ let autoNextTargetEpisode = null;
 let driftSoftThresholdSec = 0.2;
 let driftHardThresholdSec = 1.2;
 let autoplayCountdownDefaultSec = 8;
-let localFileRequirement = null;
-let playbackLocked = false;
-let localVerifyInFlightKey = '';
 let localObjectUrl = '';
 let localObjectHash = '';
 let lastDriftCorrectionAt = 0;
 let lastHeartbeatSentAt = 0;
+let lastUnmatchedFiles = [];
 
 function getAuthToken() {
   return localStorage.getItem(AUTH_TOKEN_KEY) || '';
@@ -116,10 +117,6 @@ function displayHash(hash, length = 6) {
   }
   const size = Math.max(1, Number(length) || 6);
   return normalized.slice(0, size);
-}
-
-function localVerifyKey(episodeIndex, hash) {
-  return `${Number(episodeIndex || 0)}:${normalizeHash(hash)}`;
 }
 
 async function apiFetch(url, options = {}) {
@@ -189,8 +186,35 @@ function updatePlaybackFormInfo() {
   playbackFormInfoEl.textContent = `当前视频形式: ${sourceLabel} | 当前播放来源: ${playingFrom}`;
 }
 
-function setLocalFileStatus(text) {
-  localFileStatusEl.textContent = text || '';
+function setVerifyStatus(text) {
+  verifyStatusEl.textContent = text || '';
+}
+
+function truncateLabel(value, maxLen = 24) {
+  const text = String(value || '').trim();
+  if (!text || text.length <= maxLen) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(1, maxLen - 1))}...`;
+}
+
+function formatCompactList(items, maxCount = 4) {
+  const values = Array.from(items || []).filter(Boolean);
+  if (!values.length) {
+    return '';
+  }
+  const shown = values.slice(0, maxCount).join('、');
+  if (values.length <= maxCount) {
+    return shown;
+  }
+  return `${shown} 等 ${values.length} 项`;
+}
+
+function formatEpisodeLabel(episodeIndex) {
+  const index = Number(episodeIndex || 0);
+  const episode = episodes[index];
+  const title = truncateLabel(episode?.title || '', 18);
+  return title ? `第 ${index + 1} 集(${title})` : `第 ${index + 1} 集`;
 }
 
 function setPlaybackSuppressed(durationMs = SUPPRESS_MS) {
@@ -247,18 +271,66 @@ function setWatchVideoSource(sourceUrl, isLocalObjectUrl = false, localHash = ''
   watchVideoEl.load();
 }
 
-function setPlaybackLocked(locked, message) {
-  playbackLocked = Boolean(locked);
-  watchVideoEl.controls = !playbackLocked;
-  playbackRateEl.disabled = playbackLocked;
-
-  if (playbackLocked) {
-    setPlaybackSuppressed(180);
-    watchVideoEl.pause();
-    if (message) {
-      setStatus(message);
+function hasAllEpisodesVerified() {
+  if (!episodes.length) {
+    return false;
+  }
+  for (let idx = 0; idx < episodes.length; idx += 1) {
+    const episode = episodes[idx];
+    const hash = normalizeHash(episode.contentHash || '');
+    if (!hash) {
+      return false;
+    }
+    if (!isEpisodeVerified(idx, hash)) {
+      return false;
     }
   }
+  return true;
+}
+
+function updateVerificationStateUI() {
+  const total = episodes.length;
+  let verifiedCount = 0;
+  const missingEpisodes = [];
+  for (let idx = 0; idx < episodes.length; idx += 1) {
+    const episode = episodes[idx];
+    if (isEpisodeVerified(idx, episode.contentHash || '')) {
+      verifiedCount += 1;
+      continue;
+    }
+    missingEpisodes.push(formatEpisodeLabel(idx));
+  }
+
+  verifyProgressTextEl.textContent = `${verifiedCount}/${total} 已校验`;
+  const progressPercent = total > 0 ? Math.round((verifiedCount / total) * 100) : 0;
+  verifyProgressBarEl.style.width = `${progressPercent}%`;
+
+  if (total === 0) {
+    verifyStateBadgeEl.textContent = '无剧集可校验';
+    verifyMissingEpisodesEl.textContent = '当前房间无可校验剧集';
+    verifyUnmatchedFilesEl.textContent = '';
+    updateJoinStateUI();
+    return;
+  }
+
+  const allReady = total > 0 && verifiedCount === total;
+  verifyStateBadgeEl.textContent = allReady
+    ? `文件已齐全 (${verifiedCount}/${total})`
+    : `文件校验中 (${verifiedCount}/${total})`;
+
+  if (missingEpisodes.length) {
+    verifyMissingEpisodesEl.textContent = `待补齐: ${formatCompactList(missingEpisodes, 4)}`;
+  } else {
+    verifyMissingEpisodesEl.textContent = '待补齐: 无';
+  }
+
+  if (lastUnmatchedFiles.length) {
+    verifyUnmatchedFilesEl.textContent = `未匹配文件: ${formatCompactList(lastUnmatchedFiles, 3)}`;
+  } else {
+    verifyUnmatchedFilesEl.textContent = '未匹配文件: 无';
+  }
+
+  updateJoinStateUI();
 }
 
 function formatDate(value) {
@@ -298,8 +370,9 @@ function removeRemoteVideo(peerId) {
 function updateJoinStateUI() {
   const joining = Boolean(joiningRoom);
   const inRoom = Boolean(joined);
+  const allVerified = hasAllEpisodesVerified();
 
-  joinBtn.disabled = joining || inRoom;
+  joinBtn.disabled = joining || inRoom || !allVerified;
   leaveBtn.disabled = joining || !inRoom;
 
   if (joining) {
@@ -538,7 +611,7 @@ async function applyMediaPreferenceChange() {
 }
 
 function emitPlayback(action, overrides = {}, force = false) {
-  if (!socket || !joined || playbackLocked || (!force && playbackSuppressed)) {
+  if (!socket || !joined || (!force && playbackSuppressed)) {
     return;
   }
 
@@ -721,7 +794,7 @@ function startAutoNextCountdown(targetEpisode, seconds = autoplayCountdownDefaul
 }
 
 function correctPlaybackDrift(options = {}) {
-  if (!joined || !authoritativeState || playbackLocked) {
+  if (!joined || !authoritativeState) {
     return;
   }
   if (!hasRemoteParticipants() && !options.forceSeek) {
@@ -801,40 +874,6 @@ function correctPlaybackDrift(options = {}) {
   }
 }
 
-function buildRequirementFromEpisode(index) {
-  const episode = episodes[normalizeEpisodeIndex(index)];
-  if (!episode) {
-    return null;
-  }
-
-  return {
-    roomId,
-    episodeIndex: normalizeEpisodeIndex(index),
-    videoId: episode.videoId,
-    title: episode.title,
-    contentHash: normalizeHash(episode.contentHash || ''),
-  };
-}
-
-function normalizeRequirement(payload) {
-  if (!payload) {
-    return null;
-  }
-
-  const normalized = {
-    roomId: payload.roomId || roomId,
-    episodeIndex: normalizeEpisodeIndex(payload.episodeIndex),
-    videoId: payload.videoId || '',
-    title: payload.title || '',
-    contentHash: normalizeHash(payload.contentHash || ''),
-  };
-
-  if (!normalized.contentHash) {
-    return buildRequirementFromEpisode(normalized.episodeIndex);
-  }
-  return normalized;
-}
-
 function markEpisodeVerified(episodeIndex, hash) {
   const safeHash = normalizeHash(hash);
   if (!safeHash) {
@@ -850,44 +889,6 @@ function isEpisodeVerified(episodeIndex, hash) {
   }
   const saved = verifiedEpisodeHashes.get(Number(episodeIndex || 0));
   return saved === safeHash;
-}
-
-function getCurrentRequirement() {
-  const fallback = buildRequirementFromEpisode(currentEpisodeIndex);
-  if (!localFileRequirement) {
-    return fallback;
-  }
-  if (Number(localFileRequirement.episodeIndex) !== Number(currentEpisodeIndex)) {
-    return fallback;
-  }
-  return localFileRequirement;
-}
-
-function renderLocalFileGate() {
-  localFileGateEl.classList.remove('hidden');
-  const requirement = getCurrentRequirement();
-
-  if (!requirement || !requirement.contentHash) {
-    localFileHintEl.textContent = '当前集缺少 contentHash，暂时无法校验。';
-    setPlaybackLocked(true, '当前集缺少校验信息，播放已锁定');
-    return;
-  }
-
-  localFileRequirement = requirement;
-  localFileHintEl.textContent = `第 ${requirement.episodeIndex + 1} 集: ${requirement.title || '-'} | 需要 SHA-256: ${displayHash(requirement.contentHash)}`;
-
-  if (isEpisodeVerified(requirement.episodeIndex, requirement.contentHash)) {
-    setPlaybackLocked(false);
-    if (!localFileStatusEl.textContent) {
-      setLocalFileStatus('当前集已校验通过');
-    }
-    return;
-  }
-
-  setPlaybackLocked(true, '当前集未完成本地文件校验，播放已锁定');
-  if (!joined) {
-    setLocalFileStatus('请先加入房间，再校验当前集文件');
-  }
 }
 
 function renderEpisodeList() {
@@ -923,6 +924,8 @@ function renderEpisodeList() {
     row.appendChild(hash);
     episodeListEl.appendChild(row);
   });
+
+  updateVerificationStateUI();
 }
 
 async function setEpisode(index, options = {}) {
@@ -961,12 +964,7 @@ async function setEpisode(index, options = {}) {
     }
   }
 
-  if (!localFileRequirement || Number(localFileRequirement.episodeIndex) !== currentEpisodeIndex) {
-    localFileRequirement = buildRequirementFromEpisode(currentEpisodeIndex);
-  }
-
   updatePlaybackFormInfo();
-  renderLocalFileGate();
   renderEpisodeList();
 }
 
@@ -982,9 +980,7 @@ async function switchEpisode(index, shouldEmit, autoPlayNext, options = {}) {
     watchVideoEl.currentTime = 0;
   }
 
-  if (playbackLocked) {
-    watchVideoEl.pause();
-  } else if (autoPlayNext) {
+  if (autoPlayNext) {
     watchVideoEl.play().catch(() => {});
   } else {
     watchVideoEl.pause();
@@ -994,7 +990,7 @@ async function switchEpisode(index, shouldEmit, autoPlayNext, options = {}) {
     emitPlayback('episode-switch', {
       episodeIndex: currentEpisodeIndex,
       currentTime: watchVideoEl.currentTime || 0,
-      isPlaying: Boolean(autoPlayNext && !playbackLocked),
+      isPlaying: Boolean(autoPlayNext),
       playbackRate: watchVideoEl.playbackRate || 1,
     }, true);
   }
@@ -1028,12 +1024,6 @@ async function applyPlaybackState(state, actionHint) {
 
   cancelAutoNextCountdown(false);
 
-  if (playbackLocked) {
-    watchVideoEl.pause();
-    renderEpisodeList();
-    return;
-  }
-
   if (state.isPlaying || action === 'play') {
     watchVideoEl.play().catch(() => {});
   } else if (action === 'pause' || action === 'seek' || !state.isPlaying) {
@@ -1050,7 +1040,7 @@ async function applyPlaybackState(state, actionHint) {
 }
 
 function maybeCorrectPlaybackDrift() {
-  if (!joined || playbackSuppressed || !authoritativeState || playbackLocked) {
+  if (!joined || playbackSuppressed || !authoritativeState) {
     return;
   }
   if (!hasRemoteParticipants()) {
@@ -1061,55 +1051,6 @@ function maybeCorrectPlaybackDrift() {
   }
 }
 
-function verifyRequirementThroughSocket(requirement) {
-  if (!socket || !joined || !requirement?.contentHash) {
-    return;
-  }
-
-  const key = localVerifyKey(requirement.episodeIndex, requirement.contentHash);
-  if (localVerifyInFlightKey === key) {
-    return;
-  }
-
-  localVerifyInFlightKey = key;
-  socket.emit('local-file-verified', {
-    episodeIndex: requirement.episodeIndex,
-    contentHash: requirement.contentHash,
-  }, (result) => {
-    localVerifyInFlightKey = '';
-    if (!result?.ok) {
-      setLocalFileStatus(`服务端校验失败: ${result?.error || '未知错误'}`);
-      renderLocalFileGate();
-      return;
-    }
-
-    markEpisodeVerified(requirement.episodeIndex, requirement.contentHash);
-    setLocalFileStatus(`第 ${Number(requirement.episodeIndex || 0) + 1} 集校验通过`);
-    renderLocalFileGate();
-
-    if (authoritativeState && Number(authoritativeState.episodeIndex || 0) === Number(requirement.episodeIndex || 0)) {
-      applyPlaybackState(authoritativeState, authoritativeState.action || 'seek').catch((err) => {
-        console.error('apply playback after local verify failed', err);
-      });
-    }
-  });
-}
-
-function tryAutoVerifyCurrentRequirement() {
-  const requirement = getCurrentRequirement();
-  if (!requirement || !requirement.contentHash) {
-    return;
-  }
-  if (isEpisodeVerified(requirement.episodeIndex, requirement.contentHash)) {
-    renderLocalFileGate();
-    return;
-  }
-
-  if (localFileMapByHash.has(requirement.contentHash)) {
-    verifyRequirementThroughSocket(requirement);
-  }
-}
-
 async function computeFileSha256Hex(file, options = {}) {
   if (window.WatchPartyCommon?.computeFileSha256Hex) {
     return window.WatchPartyCommon.computeFileSha256Hex(file, options);
@@ -1117,52 +1058,90 @@ async function computeFileSha256Hex(file, options = {}) {
   throw new Error('缺少哈希模块，请刷新页面后重试');
 }
 
-async function verifySelectedLocalFile() {
-  if (!joined || !socket) {
-    setLocalFileStatus('请先加入房间');
+async function verifySelectedFiles(fileList) {
+  if (!episodes.length) {
+    setVerifyStatus('当前房间无可校验剧集');
     return;
   }
 
-  const requirement = getCurrentRequirement();
-  if (!requirement || !requirement.contentHash) {
-    setLocalFileStatus('当前集缺少校验信息');
+  const files = Array.from(fileList || []).filter((item) => item instanceof File);
+  if (!files.length) {
+    setVerifyStatus('请选择至少一个本地视频文件');
     return;
   }
 
-  const file = localFilePickerEl.files && localFilePickerEl.files[0];
-  if (!file) {
-    setLocalFileStatus('请选择本地文件');
-    return;
+  const episodeIndexesByHash = new Map();
+  episodes.forEach((episode, index) => {
+    const hash = normalizeHash(episode.contentHash || '');
+    if (!hash) {
+      return;
+    }
+    if (!episodeIndexesByHash.has(hash)) {
+      episodeIndexesByHash.set(hash, []);
+    }
+    episodeIndexesByHash.get(hash).push(index);
+  });
+
+  let matchedEpisodes = 0;
+  let matchedFiles = 0;
+  let unmatchedFiles = 0;
+  const unmatchedFileLabels = [];
+
+  for (let fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
+    const file = files[fileIndex];
+    setVerifyStatus(`正在校验文件 ${fileIndex + 1}/${files.length}: ${file.name}`);
+
+    let calculatedHash = '';
+    try {
+      calculatedHash = normalizeHash(await computeFileSha256Hex(file, {
+        onProgress: (loaded, total) => {
+          const pct = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
+          setVerifyStatus(`校验 ${file.name} (${fileIndex + 1}/${files.length})... ${pct}%`);
+        },
+      }));
+    } catch (err) {
+      unmatchedFiles += 1;
+      unmatchedFileLabels.push(`${truncateLabel(file.name, 20)}(读取失败)`);
+      setVerifyStatus(`文件 ${file.name} 读取失败: ${err.message}`);
+      continue;
+    }
+
+    const indexes = episodeIndexesByHash.get(calculatedHash) || [];
+    if (!indexes.length) {
+      unmatchedFiles += 1;
+      unmatchedFileLabels.push(`${truncateLabel(file.name, 20)}(hash:${displayHash(calculatedHash)})`);
+      continue;
+    }
+
+    matchedFiles += 1;
+    localFileMapByHash.set(calculatedHash, file);
+    indexes.forEach((episodeIndex) => {
+      if (!isEpisodeVerified(episodeIndex, calculatedHash)) {
+        matchedEpisodes += 1;
+      }
+      markEpisodeVerified(episodeIndex, calculatedHash);
+    });
   }
 
-  setLocalFileStatus('计算 SHA-256 中...');
+  lastUnmatchedFiles = unmatchedFileLabels;
+  renderEpisodeList();
+  updateJoinStateUI();
 
-  let calculatedHash;
-  try {
-    calculatedHash = normalizeHash(await computeFileSha256Hex(file, {
-      onProgress: (loaded, total) => {
-        const pct = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
-        setLocalFileStatus(`计算 SHA-256 中... ${pct}%`);
-      },
-    }));
-  } catch (err) {
-    setLocalFileStatus(`计算 hash 失败: ${err.message}`);
-    return;
-  }
-
-  if (calculatedHash !== requirement.contentHash) {
-    setLocalFileStatus(`hash 不匹配，期望 ${displayHash(requirement.contentHash)}，实际 ${displayHash(calculatedHash)}`);
-    renderLocalFileGate();
-    return;
-  }
-
-  localFileMapByHash.set(calculatedHash, file);
-  setLocalFileStatus('本地 hash 校验通过，正在同步到房间...');
-  verifyRequirementThroughSocket(requirement);
+  const total = episodes.length;
+  const verified = episodes.filter((ep, idx) => isEpisodeVerified(idx, ep.contentHash || '')).length;
+  const readyText = verified === total ? '全部剧集已校验，可加入房间。' : '还有剧集未校验，暂不可加入房间。';
+  setVerifyStatus(`匹配文件 ${matchedFiles} 个，新增匹配剧集 ${matchedEpisodes} 集，未匹配文件 ${unmatchedFiles} 个。${readyText}`);
 }
 
 async function joinRoom() {
   if (joined || joiningRoom || !socket) {
+    return;
+  }
+
+  if (!hasAllEpisodesVerified()) {
+    setStatus('请先完成全部剧集文件校验后再加入');
+    setVerifyStatus('当前仍有未校验剧集，请点击“选择文件并校验”补齐。');
+    updateJoinStateUI();
     return;
   }
 
@@ -1175,7 +1154,18 @@ async function joinRoom() {
     // ignore
   }
 
-  socket.emit('join-room', { roomId }, (result) => {
+  const verifiedEpisodeHashesPayload = {};
+  episodes.forEach((episode, idx) => {
+    const savedHash = normalizeHash(verifiedEpisodeHashes.get(idx) || '');
+    if (savedHash) {
+      verifiedEpisodeHashesPayload[idx] = savedHash;
+    }
+  });
+
+  socket.emit('join-room', {
+    roomId,
+    verifiedEpisodeHashes: verifiedEpisodeHashesPayload,
+  }, (result) => {
     joiningRoom = false;
     updateJoinStateUI();
 
@@ -1194,9 +1184,6 @@ async function joinRoom() {
       participants.set(socket.id, currentUser.username);
       renderParticipants();
     }
-
-    tryAutoVerifyCurrentRequirement();
-    renderLocalFileGate();
   });
 }
 
@@ -1241,7 +1228,6 @@ function canDeleteRoom() {
 async function initRoomInfo() {
   const result = await apiFetch(`/api/rooms/${roomId}`);
   roomData = result;
-  localFileRequirement = normalizeRequirement(result.localFileRequirement);
 
   const syncConfig = result.syncConfig || {};
   driftSoftThresholdSec = Math.max(0.05, Number(syncConfig.driftSoftThresholdMs || 200) / 1000);
@@ -1277,7 +1263,12 @@ async function initRoomInfo() {
   }
 
   setAuthoritativeState(result.state || null);
-  renderLocalFileGate();
+  updateVerificationStateUI();
+  if (hasAllEpisodesVerified()) {
+    setVerifyStatus('全部剧集已校验，可直接加入房间');
+  } else {
+    setVerifyStatus('请先点击“选择文件并校验”，补齐全部剧集后再加入');
+  }
 }
 
 async function deleteCurrentRoom() {
@@ -1337,31 +1328,6 @@ function bindSocketEvents() {
     applyPlaybackState(state, state?.action).catch((err) => {
       console.error('apply playback update failed', err);
     });
-  });
-
-  socket.on('local-file-required', (payload) => {
-    localFileRequirement = normalizeRequirement(payload);
-    setLocalFileStatus('当前集需要本地文件校验');
-    renderLocalFileGate();
-    tryAutoVerifyCurrentRequirement();
-  });
-
-  socket.on('playback-denied', (payload = {}) => {
-    if (payload.reason === 'local-file-unverified') {
-      const fallbackRequirement = buildRequirementFromEpisode(Number(payload.requiredEpisodeIndex || currentEpisodeIndex));
-      if (fallbackRequirement) {
-        localFileRequirement = fallbackRequirement;
-      }
-      setStatus('播放被拒绝：请先校验当前集本地文件');
-      setLocalFileStatus('播放权限被拒绝，请完成本地文件校验');
-      renderLocalFileGate();
-
-      if (authoritativeState) {
-        applyPlaybackState(authoritativeState, 'seek').catch((err) => {
-          console.error('realign after playback denied failed', err);
-        });
-      }
-    }
   });
 
   socket.on('webrtc-offer', async ({ fromId, sdp, name }) => {
@@ -1479,18 +1445,24 @@ chatFormEl.addEventListener('submit', (event) => {
   chatInputEl.value = '';
 });
 
-verifyLocalFileBtn.addEventListener('click', () => {
-  verifySelectedLocalFile().catch((err) => {
-    setLocalFileStatus(`校验失败: ${err.message}`);
+verifyFilesBtn.addEventListener('click', () => {
+  if (!episodes.length) {
+    setVerifyStatus('当前房间无可校验剧集');
+    return;
+  }
+  verifyFilesInputEl.click();
+});
+
+verifyFilesInputEl.addEventListener('change', () => {
+  const files = verifyFilesInputEl.files;
+  verifySelectedFiles(files).catch((err) => {
+    setVerifyStatus(`校验失败: ${err.message}`);
+  }).finally(() => {
+    verifyFilesInputEl.value = '';
   });
 });
 
 watchVideoEl.addEventListener('play', () => {
-  if (playbackLocked) {
-    setPlaybackSuppressed(120);
-    watchVideoEl.pause();
-    return;
-  }
   cancelAutoNextCountdown(false);
   emitPlayback('play');
 });
@@ -1498,10 +1470,6 @@ watchVideoEl.addEventListener('play', () => {
 watchVideoEl.addEventListener('pause', () => emitPlayback('pause'));
 
 watchVideoEl.addEventListener('seeking', () => {
-  if (playbackLocked) {
-    return;
-  }
-
   cancelAutoNextCountdown(false);
   if (seekDebounce) {
     clearTimeout(seekDebounce);
@@ -1510,7 +1478,7 @@ watchVideoEl.addEventListener('seeking', () => {
 });
 
 watchVideoEl.addEventListener('ratechange', () => {
-  if (playbackSuppressed || playbackLocked) {
+  if (playbackSuppressed) {
     return;
   }
   cancelAutoNextCountdown(false);
@@ -1519,9 +1487,6 @@ watchVideoEl.addEventListener('ratechange', () => {
 });
 
 playbackRateEl.addEventListener('change', () => {
-  if (playbackLocked) {
-    return;
-  }
   cancelAutoNextCountdown(false);
   const rate = Number(playbackRateEl.value || 1);
   setPlaybackSuppressed(180);
@@ -1566,7 +1531,7 @@ fullscreenBtn.addEventListener('click', async () => {
 });
 
 watchVideoEl.addEventListener('ended', () => {
-  if (!joined || playbackLocked) {
+  if (!joined) {
     return;
   }
   if (currentEpisodeIndex < episodes.length - 1) {
@@ -1595,7 +1560,7 @@ setInterval(() => {
   updateLocalEpisodeProgress(currentEpisodeIndex, watchVideoEl.currentTime || 0);
   maybeCorrectPlaybackDrift();
 
-  if (!playbackSuppressed && !playbackLocked && !watchVideoEl.paused) {
+  if (!playbackSuppressed && !watchVideoEl.paused) {
     const now = Date.now();
     if (now - lastHeartbeatSentAt >= HEARTBEAT_MS) {
       emitPlayback('timeupdate');

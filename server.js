@@ -117,7 +117,6 @@ const roomMembers = new Map();
 const roomPlayback = new Map();
 const roomMessages = new Map();
 const roomEpisodes = new Map();
-const roomLocalVerification = new Map();
 
 function nowIso() {
   return new Date().toISOString();
@@ -247,72 +246,6 @@ function getSocketAuthToken(socket) {
   }
   const cookies = parseCookiesHeader(socket.handshake?.headers?.cookie);
   return cookies[authTokenCookieName] || '';
-}
-
-function ensureRoomVerification(roomId) {
-  if (!roomLocalVerification.has(roomId)) {
-    roomLocalVerification.set(roomId, new Map());
-  }
-  return roomLocalVerification.get(roomId);
-}
-
-function setRoomVerification(roomId, userId, episodeIndex, contentHash) {
-  const byUser = ensureRoomVerification(roomId);
-  if (!byUser.has(userId)) {
-    byUser.set(userId, new Map());
-  }
-  byUser.get(userId).set(Number(episodeIndex || 0), normalizeHash(contentHash));
-}
-
-function isRoomEpisodeVerified(roomId, userId, episodeIndex, contentHash) {
-  const byUser = roomLocalVerification.get(roomId);
-  if (!byUser) {
-    return false;
-  }
-  const episodes = byUser.get(userId);
-  if (!episodes) {
-    return false;
-  }
-  const savedHash = episodes.get(Number(episodeIndex || 0));
-  return Boolean(savedHash && savedHash === normalizeHash(contentHash));
-}
-
-function clearRoomVerificationByUser(roomId, userId) {
-  const byUser = roomLocalVerification.get(roomId);
-  if (!byUser) {
-    return;
-  }
-  byUser.delete(userId);
-  if (byUser.size === 0) {
-    roomLocalVerification.delete(roomId);
-  }
-}
-
-function buildLocalFileRequiredPayload(roomId, roomStateOverride) {
-  const room = getRoomWithSource(roomId);
-  if (!room) {
-    return null;
-  }
-
-  const episodes = getRoomEpisodes(roomId, room);
-  if (!episodes.length) {
-    return null;
-  }
-
-  const state = roomStateOverride || roomPlayback.get(roomId) || getRoomPlaybackState(roomId) || getDefaultRoomState(room);
-  const index = Math.max(0, Math.min(Number(state.episodeIndex || 0), episodes.length - 1));
-  const episode = episodes[index];
-  if (!episode) {
-    return null;
-  }
-
-  return {
-    roomId,
-    episodeIndex: index,
-    videoId: episode.videoId,
-    title: episode.title,
-    contentHash: normalizeHash(episode.contentHash || ''),
-  };
 }
 
 function serializeRoom(room) {
@@ -509,12 +442,7 @@ function removeSocketFromRoom(socket) {
 
   const members = roomMembers.get(roomId);
   if (members) {
-    const currentUserId = socket.data.userId;
     members.delete(socket.id);
-    const sameUserStillOnline = [...members.values()].some((member) => member.userId === currentUserId);
-    if (!sameUserStillOnline) {
-      clearRoomVerificationByUser(roomId, currentUserId);
-    }
     socket.to(roomId).emit('participant-left', {
       id: socket.id,
       name: socket.data.username,
@@ -525,7 +453,6 @@ function removeSocketFromRoom(socket) {
       roomMessages.delete(roomId);
       roomPlayback.delete(roomId);
       roomEpisodes.delete(roomId);
-      roomLocalVerification.delete(roomId);
     }
   }
 
@@ -561,7 +488,6 @@ function closeRoom(roomId, reason) {
   roomPlayback.delete(roomId);
   roomMessages.delete(roomId);
   roomEpisodes.delete(roomId);
-  roomLocalVerification.delete(roomId);
   return deleteRoom(roomId);
 }
 
@@ -1030,7 +956,6 @@ app.get('/api/rooms/:roomId', authRequired, (req, res) => {
     },
     state,
     progress,
-    localFileRequirement: buildLocalFileRequiredPayload(room.id, state),
     syncConfig: {
       driftSoftThresholdMs: syncDriftSoftThresholdMs,
       driftHardThresholdMs: syncDriftHardThresholdMs,
@@ -1214,6 +1139,33 @@ io.on('connection', (socket) => {
       return;
     }
 
+    const episodes = getRoomEpisodes(roomId, room);
+    if (!episodes.length) {
+      callback?.({ ok: false, error: 'Room has no episodes' });
+      return;
+    }
+
+    const verifiedPayload = payload.verifiedEpisodeHashes && typeof payload.verifiedEpisodeHashes === 'object'
+      ? payload.verifiedEpisodeHashes
+      : null;
+    if (!verifiedPayload) {
+      callback?.({ ok: false, error: '请先校验全部剧集文件后再加入' });
+      return;
+    }
+
+    for (let idx = 0; idx < episodes.length; idx += 1) {
+      const expectedHash = normalizeHash(episodes[idx]?.contentHash || '');
+      const providedHash = normalizeHash(
+        verifiedPayload[idx]
+          ?? verifiedPayload[String(idx)]
+          ?? '',
+      );
+      if (!expectedHash || providedHash !== expectedHash) {
+        callback?.({ ok: false, error: `第 ${idx + 1} 集文件未校验通过` });
+        return;
+      }
+    }
+
     removeSocketFromRoom(socket);
     ensureRoomState(roomId, room);
 
@@ -1234,10 +1186,6 @@ io.on('connection', (socket) => {
     socket.emit('existing-participants', { participants: existingParticipants });
     socket.emit('chat-history', { messages: roomMessages.get(roomId) || [] });
     socket.emit('playback-state', roomPlayback.get(roomId));
-    const localFileRequired = buildLocalFileRequiredPayload(roomId);
-    if (localFileRequired) {
-      socket.emit('local-file-required', localFileRequired);
-    }
 
     socket.to(roomId).emit('participant-joined', {
       id: socket.id,
@@ -1245,38 +1193,6 @@ io.on('connection', (socket) => {
     });
 
     callback?.({ ok: true, participants: existingParticipants });
-  });
-
-  socket.on('local-file-verified', (payload = {}, callback) => {
-    const roomId = socket.data.roomId;
-    if (!roomId) {
-      callback?.({ ok: false, error: 'Not in room' });
-      return;
-    }
-
-    const room = getRoomWithSource(roomId);
-    if (!room) {
-      callback?.({ ok: false, error: 'Room not found' });
-      return;
-    }
-
-    const episodes = getRoomEpisodes(roomId, room);
-    if (!episodes.length) {
-      callback?.({ ok: false, error: 'No episodes' });
-      return;
-    }
-
-    const episodeIndex = Math.max(0, Math.min(Number(payload.episodeIndex || 0), episodes.length - 1));
-    const episode = episodes[episodeIndex];
-    const expected = normalizeHash(episode?.contentHash || '');
-    const provided = normalizeHash(payload.contentHash || '');
-    if (!expected || expected !== provided) {
-      callback?.({ ok: false, error: 'contentHash mismatch' });
-      return;
-    }
-
-    setRoomVerification(roomId, socket.data.userId, episodeIndex, provided);
-    callback?.({ ok: true, episodeIndex, contentHash: provided });
   });
 
   socket.on('chat-message', ({ text }) => {
@@ -1335,10 +1251,6 @@ io.on('connection', (socket) => {
     const action = (payload.action || '').trim();
     const countdownSeconds = Number(payload.countdownSeconds);
     const countdownToEpisode = Number(payload.countdownToEpisode);
-    const prevEpisodeIndex = Math.max(
-      0,
-      Math.min(Number(prev.episodeIndex || 0), Math.max(0, episodes.length - 1)),
-    );
 
     let watchedDelta = 0;
     if (prev.episodeIndex === nextEpisodeIndex) {
@@ -1349,29 +1261,6 @@ io.on('connection', (socket) => {
     }
 
     const selectedEpisode = episodes[nextEpisodeIndex] || null;
-    const isEpisodeSwitch = action === 'episode-switch' && nextEpisodeIndex !== prevEpisodeIndex;
-    const gateEpisodeIndex = isEpisodeSwitch ? prevEpisodeIndex : nextEpisodeIndex;
-    const gateEpisode = episodes[gateEpisodeIndex] || null;
-    const gateHash = normalizeHash(gateEpisode?.contentHash || '');
-
-    const skipGateForEpisodeSwitch = action === 'episode-switch';
-    if (!skipGateForEpisodeSwitch && (!gateHash || !isRoomEpisodeVerified(roomId, socket.data.userId, gateEpisodeIndex, gateHash))) {
-      const requiredPayload = buildLocalFileRequiredPayload(roomId, {
-        ...prev,
-        episodeIndex: gateEpisodeIndex,
-      });
-      if (requiredPayload) {
-        socket.emit('local-file-required', requiredPayload);
-      }
-      socket.emit('playback-denied', {
-        reason: 'local-file-unverified',
-        requiredEpisodeIndex: gateEpisodeIndex,
-        requestedEpisodeIndex: nextEpisodeIndex,
-        contentHash: gateHash,
-        title: gateEpisode?.title || '',
-      });
-      return;
-    }
 
     const persisted = updateRoomPlaybackState({
       roomId,
@@ -1408,12 +1297,6 @@ io.on('connection', (socket) => {
 
     roomPlayback.set(roomId, nextState);
     socket.to(roomId).emit('playback-update', nextState);
-    if (Number(prev.episodeIndex || 0) !== nextEpisodeIndex) {
-      const requiredPayload = buildLocalFileRequiredPayload(roomId, nextState);
-      if (requiredPayload) {
-        io.to(roomId).emit('local-file-required', requiredPayload);
-      }
-    }
   });
 
   socket.on('webrtc-offer', ({ targetId, sdp }) => {
