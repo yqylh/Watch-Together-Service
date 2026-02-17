@@ -104,6 +104,15 @@ function normalizeHash(hash) {
   return String(hash || '').trim().toLowerCase();
 }
 
+function displayHash(hash, length = 6) {
+  const normalized = normalizeHash(hash);
+  if (!normalized) {
+    return '-';
+  }
+  const size = Math.max(1, Number(length) || 6);
+  return normalized.slice(0, size);
+}
+
 function localVerifyKey(episodeIndex, hash) {
   return `${Number(episodeIndex || 0)}:${normalizeHash(hash)}`;
 }
@@ -765,7 +774,7 @@ function renderLocalFileGate() {
   }
 
   localFileRequirement = requirement;
-  localFileHintEl.textContent = `第 ${requirement.episodeIndex + 1} 集: ${requirement.title || '-'} | 需要 SHA-256: ${requirement.contentHash}`;
+  localFileHintEl.textContent = `第 ${requirement.episodeIndex + 1} 集: ${requirement.title || '-'} | 需要 SHA-256: ${displayHash(requirement.contentHash)}`;
 
   if (isEpisodeVerified(requirement.episodeIndex, requirement.contentHash)) {
     setPlaybackLocked(false);
@@ -808,7 +817,7 @@ function renderEpisodeList() {
       : '进度: 未开始';
     const verifiedText = isEpisodeVerified(idx, ep.contentHash || '') ? '已校验' : '未校验';
     const sourceLabel = mapSourceTypeLabel(ep.sourceType);
-    hash.textContent = `形式: ${sourceLabel} | hash: ${ep.contentHash || '-'} | ${verifiedText} | ${progressText}`;
+    hash.textContent = `形式: ${sourceLabel} | hash: ${displayHash(ep.contentHash)} | ${verifiedText} | ${progressText}`;
 
     row.appendChild(btn);
     row.appendChild(hash);
@@ -1042,7 +1051,7 @@ async function verifySelectedLocalFile() {
   }
 
   if (calculatedHash !== requirement.contentHash) {
-    setLocalFileStatus(`hash 不匹配，期望 ${requirement.contentHash}，实际 ${calculatedHash}`);
+    setLocalFileStatus(`hash 不匹配，期望 ${displayHash(requirement.contentHash)}，实际 ${displayHash(calculatedHash)}`);
     renderLocalFileGate();
     return;
   }

@@ -20,6 +20,7 @@ const {
   formatDate,
   formatSeconds,
   formatBytes,
+  shortenHash,
 } = window.WatchPartyCommon;
 
 let currentUser = null;
@@ -93,7 +94,7 @@ async function loadVideo() {
 
   videoTitleEl.textContent = video.title;
   renderCover(video);
-  videoMetaEl.textContent = `上传时间: ${formatDate(video.createdAt)} | 文件: ${video.originalName} | 大小: ${formatBytes(video.size)} | 来源: 本地模式（hash） | hash: ${video.contentHash || '-'}`;
+  videoMetaEl.textContent = `上传时间: ${formatDate(video.createdAt)} | 文件: ${video.originalName} | 大小: ${formatBytes(video.size)} | 来源: 本地模式（hash） | hash: ${shortenHash(video.contentHash)}`;
   videoLinkEl.innerHTML = `唯一链接: <a href="${video.watchUrl}">${location.origin}${video.watchUrl}</a>`;
 
   roomListEl.innerHTML = '';

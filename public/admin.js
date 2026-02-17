@@ -17,6 +17,7 @@ const {
   formatDate,
   formatSeconds,
   formatBytes,
+  shortenHash,
 } = window.WatchPartyCommon;
 
 let currentUser = null;
@@ -113,7 +114,7 @@ function renderVideoCard(video) {
 
   const meta = document.createElement('div');
   meta.className = 'small';
-  meta.textContent = `文件: ${video.originalName || '-'} | 大小: ${formatBytes(video.size)} | hash: ${video.contentHash || '-'} | 房间数: ${Array.isArray(video.rooms) ? video.rooms.length : 0} | 创建时间: ${formatDate(video.createdAt)}`;
+  meta.textContent = `文件: ${video.originalName || '-'} | 大小: ${formatBytes(video.size)} | hash: ${shortenHash(video.contentHash)} | 房间数: ${Array.isArray(video.rooms) ? video.rooms.length : 0} | 创建时间: ${formatDate(video.createdAt)}`;
 
   const action = document.createElement('div');
   action.className = 'flex';

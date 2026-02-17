@@ -23,6 +23,7 @@ const {
   formatDate,
   formatSeconds,
   formatBytes,
+  shortenHash,
 } = window.WatchPartyCommon;
 
 let currentUser = null;
@@ -99,7 +100,7 @@ function renderLibraryResults() {
 
     const meta = document.createElement('div');
     meta.className = 'small';
-    meta.textContent = `${video.originalName || '-'} | ${formatBytes(video.size)} | ${video.contentHash ? video.contentHash.slice(0, 12) : '-'}`;
+    meta.textContent = `${video.originalName || '-'} | ${formatBytes(video.size)} | ${shortenHash(video.contentHash)}`;
 
     const addBtn = document.createElement('button');
     addBtn.type = 'button';
@@ -266,7 +267,7 @@ function renderVideoCard(video) {
 
   const meta = document.createElement('div');
   meta.className = 'small';
-  meta.textContent = `${video.originalName || '-'} | ${formatBytes(video.size)} | ${video.contentHash || '-'} | ${formatDate(video.createdAt)}`;
+  meta.textContent = `${video.originalName || '-'} | ${formatBytes(video.size)} | ${shortenHash(video.contentHash)} | ${formatDate(video.createdAt)}`;
 
   const roomForm = document.createElement('form');
   roomForm.className = 'quick-room-form';
