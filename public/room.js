@@ -270,13 +270,6 @@ function switchRoomTab(panelId) {
   });
 }
 
-function mapSourceTypeLabel(sourceType) {
-  if (sourceType === 'local_hash') {
-    return '本地文件模式（仅 hash）';
-  }
-  return '本地文件模式';
-}
-
 function setVerifyStatus(text) {
   verifyStatusEl.textContent = text || '';
 }
@@ -1014,8 +1007,7 @@ function renderEpisodeList() {
       ? `进度: ${formatSeconds(progress.lastPositionSeconds || 0)} | 最远: ${formatSeconds(progress.maxPositionSeconds || 0)} | 已看: ${formatSeconds(progress.watchedSeconds || 0)}`
       : '进度: 未开始';
     const verifiedText = isEpisodeVerified(idx, ep.contentHash || '') ? '已校验' : '未校验';
-    const sourceLabel = mapSourceTypeLabel(ep.sourceType);
-    hash.textContent = `形式: ${sourceLabel} | hash: ${displayHash(ep.contentHash)} | ${verifiedText} | ${progressText}`;
+    hash.textContent = `形式: 本地文件模式 | hash: ${displayHash(ep.contentHash)} | ${verifiedText} | ${progressText}`;
 
     row.appendChild(btn);
     row.appendChild(hash);

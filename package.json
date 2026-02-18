@@ -1,7 +1,7 @@
 {
   "name": "remote-watching-sync",
   "version": "1.0.0",
-  "description": "Watch-party service with video upload, rooms, chat and WebRTC audio/video",
+  "description": "Local-file watch-party service with hash-based sync, rooms, chat and WebRTC audio/video",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

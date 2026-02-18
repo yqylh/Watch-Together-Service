@@ -3,6 +3,7 @@ require('dotenv').config();
 const fs = require('fs');
 const fsp = require('fs/promises');
 const http = require('http');
+const os = require('os');
 const path = require('path');
 const {
   randomBytes,
@@ -59,7 +60,7 @@ const port = Number(process.env.PORT || 3000);
 const jwtSecret = process.env.JWT_SECRET || 'replace-this-secret';
 const authTokenCookieName = 'auth_token';
 
-const tempDir = path.join(__dirname, process.env.TEMP_UPLOAD_DIR || 'uploads_tmp');
+const tempDir = path.join(os.tmpdir(), 'remote-watching-sync-cover-upload');
 const coversDir = path.join(__dirname, process.env.COVERS_DIR || 'covers');
 const syncDriftSoftThresholdMs = Math.max(50, Number(process.env.SYNC_DRIFT_SOFT_THRESHOLD_MS || 200));
 const syncDriftHardThresholdMs = Math.max(syncDriftSoftThresholdMs, Number(process.env.SYNC_DRIFT_HARD_THRESHOLD_MS || 1200));
@@ -254,7 +255,6 @@ function serializeRoom(room) {
     id: room.id,
     videoId: room.video_id,
     playlistId: room.playlist_id || null,
-    roomMode: 'local_file',
     createdByUserId: room.created_by_user_id || null,
     startEpisodeIndex: Number(room.start_episode_index || 0),
     name: room.name,
@@ -282,11 +282,8 @@ function serializeVideo(video) {
     mimeType: video.mime_type,
     size: video.size,
     contentHash: video.hash || '',
-    sourceType: 'local_hash',
-    sourceValue: video.source_value || '',
     createdAt: video.created_at,
     watchUrl: `/videos/${video.id}`,
-    mediaUrl: null,
     coverUrl: video.cover_filename ? `/covers/${video.cover_filename}` : null,
     rooms,
   };
@@ -326,11 +323,9 @@ function serializePlaylistEpisode(item) {
     episodeIndex: item.episode_index,
     title,
     originalTitle: item.video_title,
-    mediaUrl: null,
     watchUrl: `/videos/${item.video_id}`,
     mimeType: item.video_mime_type,
     size: item.video_size,
-    sourceType: 'local_hash',
     contentHash: item.video_hash || '',
     coverUrl: item.video_cover_filename ? `/covers/${item.video_cover_filename}` : null,
   };
@@ -377,11 +372,9 @@ function buildRoomPlaylist(room) {
       episodeIndex: 0,
       title: video.title,
       originalTitle: video.title,
-      mediaUrl: null,
       watchUrl: `/videos/${video.id}`,
       mimeType: video.mime_type,
       size: video.size,
-      sourceType: 'local_hash',
       contentHash: video.hash || '',
       coverUrl: video.cover_filename ? `/covers/${video.cover_filename}` : null,
     }],
@@ -668,8 +661,6 @@ app.get('/api/auth/me', authRequired, (req, res) => {
 
 app.get('/api/supported-formats', authRequired, (_req, res) => {
   res.json({
-    uploadMode: { value: 'local_file', label: '本地模式（前端计算 hash）' },
-    roomMode: { value: 'local_file', label: '本地文件同步播放' },
     formats: SUPPORTED_VIDEO_FORMATS,
     coverFormats: ['image/jpeg', 'image/png', 'image/webp'],
     sync: {
@@ -737,15 +728,8 @@ app.post('/api/videos', authRequired, coverUpload.single('cover'), async (req, r
       mimeType,
       size: localFileSize,
       hash: contentHash,
-      sourceType: 'local_hash',
-      sourceValue: localFileName || contentHash,
       coverFilename,
       coverMimeType,
-      ossKey: '',
-      storedInOss: 0,
-      localAvailable: 0,
-      lastAccessedAt: createdAt,
-      localSize: 0,
       createdAt,
     });
     savedCoverFilename = '';
@@ -776,10 +760,6 @@ app.get('/api/videos/:videoId', authRequired, (req, res) => {
   res.json({ video: serializeVideo(video) });
 });
 
-app.get('/media/:videoId', authRequired, (_req, res) => {
-  res.status(410).json({ error: '云端托管已移除。该服务仅支持本地文件模式播放。' });
-});
-
 app.get('/api/videos/:videoId/rooms', authRequired, (req, res) => {
   const video = getVideo(req.params.videoId);
   if (!video) {
@@ -807,9 +787,7 @@ app.post('/api/videos/:videoId/rooms', authRequired, (req, res) => {
     startEpisodeIndex: 0,
     name: roomName,
     creatorName: req.authUser.username,
-    creatorToken: `deprecated-${uuidv4()}`,
     createdByUserId: req.authUser.id,
-    roomMode: 'local_file',
     createdAt: nowIso(),
   });
 
@@ -903,9 +881,7 @@ app.post('/api/playlists/:playlistId/rooms', authRequired, (req, res) => {
     startEpisodeIndex,
     name: roomName,
     creatorName: req.authUser.username,
-    creatorToken: `deprecated-${uuidv4()}`,
     createdByUserId: req.authUser.id,
-    roomMode: 'local_file',
     createdAt: nowIso(),
   });
 

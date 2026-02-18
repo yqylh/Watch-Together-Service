@@ -1,8 +1,12 @@
 node_modules/
 .env
+.DS_Store
+
 data/*.db
 data/*.db-*
-playback_pool/*
-uploads_tmp/*
-logs/*
+
+covers/*
+!covers/.gitkeep
+
+logs/
 *.pid

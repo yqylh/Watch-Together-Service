@@ -26,7 +26,7 @@ if [[ ! -f .env ]]; then
   cp .env.example .env
 fi
 
-mkdir -p data covers uploads_tmp logs
+mkdir -p data covers logs
 
 PORT="$(grep -E '^PORT=' .env | tail -n 1 | cut -d '=' -f 2- || true)"
 PORT="${PORT:-3000}"

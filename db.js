@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS videos (
   original_name TEXT NOT NULL,
   mime_type TEXT NOT NULL,
   size INTEGER NOT NULL,
+  hash TEXT DEFAULT '',
+  cover_filename TEXT DEFAULT '',
+  cover_mime_type TEXT DEFAULT '',
   created_at TEXT NOT NULL
 );
 
@@ -66,11 +69,21 @@ CREATE TABLE IF NOT EXISTS playlist_items (
 CREATE TABLE IF NOT EXISTS rooms (
   id TEXT PRIMARY KEY,
   video_id TEXT NOT NULL,
+  playlist_id TEXT DEFAULT NULL,
+  start_episode_index INTEGER DEFAULT 0,
+  last_episode_index INTEGER DEFAULT 0,
+  last_current_time REAL DEFAULT 0,
+  last_playback_rate REAL DEFAULT 1,
+  last_is_playing INTEGER DEFAULT 0,
+  last_updated_at TEXT DEFAULT '',
+  total_watched_seconds REAL DEFAULT 0,
   name TEXT NOT NULL,
-  creator_name TEXT NOT NULL,
-  creator_token TEXT NOT NULL,
+  creator_name TEXT DEFAULT '',
+  created_by_user_id TEXT DEFAULT NULL,
   created_at TEXT NOT NULL,
-  FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE CASCADE
+  FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE CASCADE,
+  FOREIGN KEY(playlist_id) REFERENCES playlists(id) ON DELETE SET NULL,
+  FOREIGN KEY(created_by_user_id) REFERENCES users(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS room_episode_progress (
@@ -87,38 +100,21 @@ CREATE TABLE IF NOT EXISTS room_episode_progress (
   FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS video_jobs (
-  id TEXT PRIMARY KEY,
-  video_id TEXT DEFAULT NULL,
-  source_type TEXT NOT NULL,
-  status TEXT NOT NULL,
-  stage TEXT NOT NULL,
-  message TEXT DEFAULT '',
-  progress REAL DEFAULT 0,
-  error TEXT DEFAULT '',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE SET NULL
-);
-
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_videos_hash ON videos(hash);
+CREATE INDEX IF NOT EXISTS idx_videos_filename ON videos(filename);
 CREATE INDEX IF NOT EXISTS idx_rooms_video_id ON rooms(video_id);
+CREATE INDEX IF NOT EXISTS idx_rooms_playlist_id ON rooms(playlist_id);
+CREATE INDEX IF NOT EXISTS idx_rooms_created_by_user_id ON rooms(created_by_user_id);
 CREATE INDEX IF NOT EXISTS idx_playlist_items_playlist_id ON playlist_items(playlist_id);
 CREATE INDEX IF NOT EXISTS idx_playlist_items_video_id ON playlist_items(video_id);
 CREATE INDEX IF NOT EXISTS idx_room_episode_progress_video_id ON room_episode_progress(video_id);
-CREATE INDEX IF NOT EXISTS idx_video_jobs_created_at ON video_jobs(created_at);
 `);
 
+// 兼容历史数据库（保留必要迁移，不保留历史逻辑）
 ensureColumn('videos', 'hash', "TEXT DEFAULT ''");
-ensureColumn('videos', 'source_type', "TEXT DEFAULT 'local_hash'");
-ensureColumn('videos', 'source_value', "TEXT DEFAULT ''");
 ensureColumn('videos', 'cover_filename', "TEXT DEFAULT ''");
 ensureColumn('videos', 'cover_mime_type', "TEXT DEFAULT ''");
-ensureColumn('videos', 'oss_key', "TEXT DEFAULT ''");
-ensureColumn('videos', 'stored_in_oss', 'INTEGER DEFAULT 0');
-ensureColumn('videos', 'local_available', 'INTEGER DEFAULT 1');
-ensureColumn('videos', 'last_accessed_at', "TEXT DEFAULT ''");
-ensureColumn('videos', 'local_size', 'INTEGER DEFAULT 0');
 
 ensureColumn('rooms', 'playlist_id', 'TEXT DEFAULT NULL');
 ensureColumn('rooms', 'start_episode_index', 'INTEGER DEFAULT 0');
@@ -129,15 +125,12 @@ ensureColumn('rooms', 'last_is_playing', 'INTEGER DEFAULT 0');
 ensureColumn('rooms', 'last_updated_at', "TEXT DEFAULT ''");
 ensureColumn('rooms', 'total_watched_seconds', 'REAL DEFAULT 0');
 ensureColumn('rooms', 'created_by_user_id', 'TEXT DEFAULT NULL');
-ensureColumn('rooms', 'room_mode', "TEXT DEFAULT 'local_file'");
+ensureColumn('rooms', 'creator_name', "TEXT DEFAULT ''");
 
-db.exec(`
-CREATE INDEX IF NOT EXISTS idx_videos_hash ON videos(hash);
-CREATE INDEX IF NOT EXISTS idx_videos_filename ON videos(filename);
-CREATE INDEX IF NOT EXISTS idx_videos_last_accessed_at ON videos(last_accessed_at);
-CREATE INDEX IF NOT EXISTS idx_rooms_playlist_id ON rooms(playlist_id);
-CREATE INDEX IF NOT EXISTS idx_rooms_created_by_user_id ON rooms(created_by_user_id);
-`);
+const roomColumns = new Set(tableColumns('rooms'));
+const hasRoomCreatorToken = roomColumns.has('creator_token');
+const hasRoomCreatorName = roomColumns.has('creator_name');
+const hasRoomCreatedByUserId = roomColumns.has('created_by_user_id');
 
 const insertUserStmt = db.prepare(`
   INSERT INTO users (
@@ -174,15 +167,8 @@ const insertVideoStmt = db.prepare(`
     mime_type,
     size,
     hash,
-    source_type,
-    source_value,
     cover_filename,
     cover_mime_type,
-    oss_key,
-    stored_in_oss,
-    local_available,
-    last_accessed_at,
-    local_size,
     created_at
   ) VALUES (
     @id,
@@ -193,17 +179,22 @@ const insertVideoStmt = db.prepare(`
     @mimeType,
     @size,
     @hash,
-    @sourceType,
-    @sourceValue,
     @coverFilename,
     @coverMimeType,
-    @ossKey,
-    @storedInOss,
-    @localAvailable,
-    @lastAccessedAt,
-    @localSize,
     @createdAt
   )
+`);
+
+const getVideoStmt = db.prepare('SELECT * FROM videos WHERE id = ?');
+const getVideoByHashStmt = db.prepare('SELECT * FROM videos WHERE hash = ? ORDER BY datetime(created_at) ASC LIMIT 1');
+const listVideosStmt = db.prepare('SELECT * FROM videos ORDER BY datetime(created_at) DESC');
+const deleteVideoStmt = db.prepare('DELETE FROM videos WHERE id = ?');
+
+const updateVideoCoverStmt = db.prepare(`
+  UPDATE videos
+  SET cover_filename = @coverFilename,
+      cover_mime_type = @coverMimeType
+  WHERE id = @videoId
 `);
 
 const insertPlaylistStmt = db.prepare(`
@@ -215,49 +206,6 @@ const insertPlaylistItemStmt = db.prepare(`
   INSERT INTO playlist_items (id, playlist_id, video_id, episode_index, title_override, created_at)
   VALUES (@id, @playlistId, @videoId, @episodeIndex, @titleOverride, @createdAt)
 `);
-
-const insertRoomStmt = db.prepare(`
-  INSERT INTO rooms (
-    id,
-    video_id,
-    playlist_id,
-    start_episode_index,
-    last_episode_index,
-    last_current_time,
-    last_playback_rate,
-    last_is_playing,
-    last_updated_at,
-    total_watched_seconds,
-    name,
-    creator_name,
-    creator_token,
-    created_by_user_id,
-    room_mode,
-    created_at
-  ) VALUES (
-    @id,
-    @videoId,
-    @playlistId,
-    @startEpisodeIndex,
-    @lastEpisodeIndex,
-    @lastCurrentTime,
-    @lastPlaybackRate,
-    @lastIsPlaying,
-    @lastUpdatedAt,
-    @totalWatchedSeconds,
-    @name,
-    @creatorName,
-    @creatorToken,
-    @createdByUserId,
-    @roomMode,
-    @createdAt
-  )
-`);
-
-const getVideoStmt = db.prepare('SELECT * FROM videos WHERE id = ?');
-const getVideoByHashStmt = db.prepare('SELECT * FROM videos WHERE hash = ? ORDER BY datetime(created_at) ASC LIMIT 1');
-const listVideosStmt = db.prepare('SELECT * FROM videos ORDER BY datetime(created_at) DESC');
-const deleteVideoStmt = db.prepare('DELETE FROM videos WHERE id = ?');
 
 const getPlaylistStmt = db.prepare('SELECT * FROM playlists WHERE id = ?');
 const listPlaylistsStmt = db.prepare(`
@@ -282,29 +230,48 @@ const listPlaylistEpisodesStmt = db.prepare(`
     videos.mime_type AS video_mime_type,
     videos.size AS video_size,
     videos.hash AS video_hash,
-    videos.source_type AS video_source_type,
-    videos.source_value AS video_source_value,
     videos.cover_filename AS video_cover_filename,
     videos.cover_mime_type AS video_cover_mime_type,
-    videos.oss_key AS video_oss_key,
-    videos.stored_in_oss AS video_stored_in_oss,
-    videos.local_available AS video_local_available,
-    videos.last_accessed_at AS video_last_accessed_at,
-    videos.local_size AS video_local_size,
     videos.created_at AS video_created_at
   FROM playlist_items
   JOIN videos ON videos.id = playlist_items.video_id
   WHERE playlist_items.playlist_id = ?
   ORDER BY playlist_items.episode_index ASC
 `);
+
 const deletePlaylistStmt = db.prepare('DELETE FROM playlists WHERE id = ?');
 
-const updateVideoCoverStmt = db.prepare(`
-  UPDATE videos
-  SET
-    cover_filename = @coverFilename,
-    cover_mime_type = @coverMimeType
-  WHERE id = @videoId
+const roomInsertSpecs = [
+  { column: 'id', param: 'id' },
+  { column: 'video_id', param: 'videoId' },
+  { column: 'playlist_id', param: 'playlistId' },
+  { column: 'start_episode_index', param: 'startEpisodeIndex' },
+  { column: 'last_episode_index', param: 'lastEpisodeIndex' },
+  { column: 'last_current_time', param: 'lastCurrentTime' },
+  { column: 'last_playback_rate', param: 'lastPlaybackRate' },
+  { column: 'last_is_playing', param: 'lastIsPlaying' },
+  { column: 'last_updated_at', param: 'lastUpdatedAt' },
+  { column: 'total_watched_seconds', param: 'totalWatchedSeconds' },
+  { column: 'name', param: 'name' },
+];
+
+if (hasRoomCreatorName) {
+  roomInsertSpecs.push({ column: 'creator_name', param: 'creatorName' });
+}
+if (hasRoomCreatorToken) {
+  roomInsertSpecs.push({ column: 'creator_token', param: 'creatorToken' });
+}
+if (hasRoomCreatedByUserId) {
+  roomInsertSpecs.push({ column: 'created_by_user_id', param: 'createdByUserId' });
+}
+roomInsertSpecs.push({ column: 'created_at', param: 'createdAt' });
+
+const insertRoomStmt = db.prepare(`
+  INSERT INTO rooms (
+    ${roomInsertSpecs.map((item) => item.column).join(',\n    ')}
+  ) VALUES (
+    ${roomInsertSpecs.map((item) => `@${item.param}`).join(',\n    ')}
+  )
 `);
 
 const getRoomStmt = db.prepare('SELECT * FROM rooms WHERE id = ?');
@@ -436,120 +403,6 @@ const upsertRoomEpisodeProgressStmt = db.prepare(`
     updated_at = excluded.updated_at
 `);
 
-const touchVideoAccessStmt = db.prepare(`
-  UPDATE videos
-  SET last_accessed_at = @accessedAt
-  WHERE id = @videoId
-`);
-
-const touchVideosByFilenameStmt = db.prepare(`
-  UPDATE videos
-  SET last_accessed_at = @accessedAt
-  WHERE filename = @filename
-`);
-
-const markLocalUnavailableByFilenameStmt = db.prepare(`
-  UPDATE videos
-  SET local_available = 0
-  WHERE filename = ?
-`);
-
-const markLocalAvailableByFilenameStmt = db.prepare(`
-  UPDATE videos
-  SET local_available = 1,
-      local_size = @localSize,
-      last_accessed_at = @accessedAt
-  WHERE filename = @filename
-`);
-
-const markVideosStoredInOssByHashStmt = db.prepare(`
-  UPDATE videos
-  SET stored_in_oss = 1,
-      oss_key = @ossKey
-  WHERE hash = @hash
-`);
-
-const listLocalEvictionCandidatesStmt = db.prepare(`
-  SELECT
-    id,
-    filename,
-    COALESCE(local_size, size, 0) AS local_size,
-    COALESCE(NULLIF(last_accessed_at, ''), created_at) AS access_at,
-    created_at,
-    hash
-  FROM videos
-  WHERE local_available = 1
-  ORDER BY datetime(COALESCE(NULLIF(last_accessed_at, ''), created_at)) ASC,
-           datetime(created_at) ASC
-`);
-
-const listLocalPoolFilesStmt = db.prepare(`
-  SELECT
-    filename,
-    MAX(COALESCE(local_size, size, 0)) AS local_size
-  FROM videos
-  WHERE local_available = 1
-  GROUP BY filename
-`);
-
-const insertVideoJobStmt = db.prepare(`
-  INSERT INTO video_jobs (
-    id,
-    video_id,
-    source_type,
-    status,
-    stage,
-    message,
-    progress,
-    error,
-    created_at,
-    updated_at
-  ) VALUES (
-    @id,
-    @videoId,
-    @sourceType,
-    @status,
-    @stage,
-    @message,
-    @progress,
-    @error,
-    @createdAt,
-    @updatedAt
-  )
-`);
-
-const updateVideoJobStmt = db.prepare(`
-  UPDATE video_jobs
-  SET
-    video_id = COALESCE(@videoId, video_id),
-    status = COALESCE(@status, status),
-    stage = COALESCE(@stage, stage),
-    message = COALESCE(@message, message),
-    progress = COALESCE(@progress, progress),
-    error = COALESCE(@error, error),
-    updated_at = @updatedAt
-  WHERE id = @id
-`);
-
-const getVideoJobStmt = db.prepare('SELECT * FROM video_jobs WHERE id = ?');
-const listVideoJobsStmt = db.prepare(`
-  SELECT *
-  FROM video_jobs
-  WHERE (@status = '' OR status = @status)
-  ORDER BY datetime(created_at) DESC
-  LIMIT @limit OFFSET @offset
-`);
-const countVideoJobsStmt = db.prepare(`
-  SELECT COUNT(1) AS total
-  FROM video_jobs
-  WHERE (@status = '' OR status = @status)
-`);
-const cleanupOldVideoJobsStmt = db.prepare(`
-  DELETE FROM video_jobs
-  WHERE status IN ('completed', 'failed')
-    AND datetime(updated_at) < datetime(?)
-`);
-
 const createPlaylistTx = db.transaction((playlist, episodeItems) => {
   insertPlaylistStmt.run(playlist);
   for (const item of episodeItems) {
@@ -580,6 +433,7 @@ function createUser(user) {
     updatedAt: user.updatedAt || now,
     lastLoginAt: user.lastLoginAt || now,
   };
+
   insertUserStmt.run(row);
   return getUserById(row.id);
 }
@@ -598,17 +452,17 @@ function touchUserLastLogin(userId, at) {
 
 function createVideo(video) {
   const row = {
-    ...video,
+    id: video.id,
+    title: video.title,
+    description: video.description || '',
+    filename: video.filename,
+    originalName: video.originalName,
+    mimeType: video.mimeType,
+    size: Number(video.size || 0),
     hash: video.hash || '',
-    sourceType: video.sourceType || 'local_hash',
-    sourceValue: video.sourceValue || '',
     coverFilename: video.coverFilename || '',
     coverMimeType: video.coverMimeType || '',
-    ossKey: video.ossKey || '',
-    storedInOss: video.storedInOss ? 1 : 0,
-    localAvailable: typeof video.localAvailable === 'number' ? video.localAvailable : (video.localAvailable ? 1 : 0),
-    lastAccessedAt: video.lastAccessedAt || video.createdAt,
-    localSize: Number(video.localSize || video.size || 0),
+    createdAt: video.createdAt,
   };
 
   insertVideoStmt.run(row);
@@ -666,7 +520,8 @@ function deletePlaylist(id) {
 
 function createRoom(room) {
   const row = {
-    ...room,
+    id: room.id,
+    videoId: room.videoId,
     playlistId: room.playlistId || null,
     startEpisodeIndex: Number(room.startEpisodeIndex || 0),
     lastEpisodeIndex: Number(room.lastEpisodeIndex ?? room.startEpisodeIndex ?? 0),
@@ -675,10 +530,12 @@ function createRoom(room) {
     lastIsPlaying: room.lastIsPlaying ? 1 : 0,
     lastUpdatedAt: room.lastUpdatedAt || room.createdAt,
     totalWatchedSeconds: Number(room.totalWatchedSeconds || 0),
-    creatorName: room.creatorName || 'legacy',
+    name: room.name,
+    creatorName: room.creatorName || '',
+    // 仅兼容历史 schema 中的 NOT NULL 列，业务逻辑不再使用该字段。
     creatorToken: room.creatorToken || `legacy-${room.id}`,
     createdByUserId: room.createdByUserId || null,
-    roomMode: room.roomMode || 'local_file',
+    createdAt: room.createdAt,
   };
 
   insertRoomStmt.run(row);
@@ -757,97 +614,6 @@ function updateRoomPlaybackState(payload) {
   return getRoomPlaybackState(payload.roomId);
 }
 
-function touchVideoAccess(videoId, accessedAt) {
-  touchVideoAccessStmt.run({ videoId, accessedAt });
-}
-
-function touchVideosByFilename(filename, accessedAt) {
-  touchVideosByFilenameStmt.run({ filename, accessedAt });
-}
-
-function markLocalUnavailableByFilename(filename) {
-  markLocalUnavailableByFilenameStmt.run(filename);
-}
-
-function markLocalAvailableByFilename(filename, localSize, accessedAt) {
-  markLocalAvailableByFilenameStmt.run({
-    filename,
-    localSize: Number(localSize || 0),
-    accessedAt,
-  });
-}
-
-function markVideosStoredInOssByHash(hash, ossKey) {
-  if (!hash || !ossKey) {
-    return;
-  }
-  markVideosStoredInOssByHashStmt.run({ hash, ossKey });
-}
-
-function listLocalEvictionCandidates() {
-  return listLocalEvictionCandidatesStmt.all();
-}
-
-function listLocalPoolFiles() {
-  return listLocalPoolFilesStmt.all().map((row) => ({
-    filename: row.filename,
-    localSize: Number(row.local_size || 0),
-  }));
-}
-
-function createVideoJob(job) {
-  const row = {
-    ...job,
-    videoId: job.videoId || null,
-    message: job.message || '',
-    progress: Number(job.progress || 0),
-    error: job.error || '',
-  };
-
-  insertVideoJobStmt.run(row);
-  return getVideoJob(row.id);
-}
-
-function updateVideoJob(jobUpdate) {
-  updateVideoJobStmt.run({
-    id: jobUpdate.id,
-    videoId: jobUpdate.videoId ?? null,
-    status: jobUpdate.status ?? null,
-    stage: jobUpdate.stage ?? null,
-    message: jobUpdate.message ?? null,
-    progress: typeof jobUpdate.progress === 'number' ? jobUpdate.progress : null,
-    error: jobUpdate.error ?? null,
-    updatedAt: jobUpdate.updatedAt,
-  });
-  return getVideoJob(jobUpdate.id);
-}
-
-function getVideoJob(id) {
-  return getVideoJobStmt.get(id) || null;
-}
-
-function listVideoJobs({ status, limit = 50, offset = 0 } = {}) {
-  const safeLimit = Math.max(1, Math.min(200, Number(limit || 50)));
-  const safeOffset = Math.max(0, Number(offset || 0));
-  return listVideoJobsStmt.all({
-    status: (status || '').trim(),
-    limit: safeLimit,
-    offset: safeOffset,
-  });
-}
-
-function countVideoJobs({ status } = {}) {
-  const row = countVideoJobsStmt.get({ status: (status || '').trim() }) || { total: 0 };
-  return Number(row.total || 0);
-}
-
-function cleanupOldVideoJobs(beforeIso) {
-  if (!beforeIso) {
-    return 0;
-  }
-  return cleanupOldVideoJobsStmt.run(beforeIso).changes;
-}
-
 function isRoomOwner(roomId, userId) {
   if (!userId) {
     return false;
@@ -890,21 +656,6 @@ module.exports = {
   getRoomPlaybackState,
   listRoomEpisodeProgress,
   updateRoomPlaybackState,
-
-  touchVideoAccess,
-  touchVideosByFilename,
-  markLocalUnavailableByFilename,
-  markLocalAvailableByFilename,
-  markVideosStoredInOssByHash,
-  listLocalEvictionCandidates,
-  listLocalPoolFiles,
-
-  createVideoJob,
-  updateVideoJob,
-  getVideoJob,
-  listVideoJobs,
-  countVideoJobs,
-  cleanupOldVideoJobs,
 
   isRoomOwner,
 };
