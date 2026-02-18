@@ -65,6 +65,11 @@ npm start
 bash scripts/deploy.sh
 ```
 
+脚本参数：
+- 启动服务（默认）：`bash scripts/deploy.sh` 或 `bash scripts/deploy.sh start`
+- 关闭服务：`bash scripts/deploy.sh stop`
+- 关闭并清空所有运行数据（`data/`、`covers/`、`logs/`）：`bash scripts/deploy.sh reset --yes`
+
 ## 页面路由
 
 - `/` 登录/注册
@@ -137,6 +142,7 @@ Root：
 ## 环境变量
 
 - `PORT` 默认 `3000`
+- `HOST` 默认 `0.0.0.0`（监听所有网卡）
 - `JWT_SECRET` JWT 签名密钥
 - `COVERS_DIR` 封面目录
 - `SYNC_DRIFT_SOFT_THRESHOLD_MS` 漂移软阈值（毫秒）

@@ -57,6 +57,7 @@ const io = new Server(server, {
 });
 
 const port = Number(process.env.PORT || 3000);
+const host = process.env.HOST || '0.0.0.0';
 const jwtSecret = process.env.JWT_SECRET || 'replace-this-secret';
 const authTokenCookieName = 'auth_token';
 
@@ -1320,7 +1321,8 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: 'Unexpected server error' });
 });
 
-server.listen(port, () => {
+server.listen(port, host, () => {
+  const displayHost = host === '0.0.0.0' ? 'localhost' : host;
   // eslint-disable-next-line no-console
-  console.log(`Watch-party server running at http://localhost:${port}`);
+  console.log(`Watch-party server running at http://${displayHost}:${port} (bind ${host})`);
 });
